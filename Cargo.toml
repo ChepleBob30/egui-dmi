@@ -1,0 +1,11 @@
+[package]
+name = "egui-dmi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "egui_dmi"
+path = "src/lib.rs"
+
+[dependencies]
+egui = "0.37.0"
