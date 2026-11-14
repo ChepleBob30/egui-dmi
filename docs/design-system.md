@@ -61,8 +61,13 @@ DMISlider::new(&mut volume, 0.0..=100.0).show(ui);
 
 - `DMIButton` 自绘四态（禁用 > 按下 > 悬停 > 常态），其余组件委托 egui 原生控件、
   由安装后的全局样式统一着色。
-- `DMIUpdate` 现封装 `egui::Response`（`clicked()/changed()`）；源码中已用
-  `DMI标记` 注释声明：`src/dmi/` 数据通道落地后，DMIUpdate 将完全取代 Response。
+- `DMIUpdate` 现封装 `egui::Response`（`clicked()/changed()`），并携带 `id: DMIId`
+  ——组件在 `src/ui/id.rs` 注册表中的两级编号（如 `3`、`5.2`，0 号系统保留）；
+  源码中已用 `DMI标记` 注释声明：`src/dmi/` 数据通道落地后，DMIUpdate 将完全取代 Response。
+- 编号复用规则：键 =（egui id, DMI 名称）。同一 egui id 下**命名不同即额外分配新编号**；
+  名称相同则跨帧复用。组件可用 `.dmi_name("theme_selector")` 显式命名（便于 DMI 分配 id），
+  `DMISelect` 还可用 `.individual_ids()` 让每个选项获得 `父名_选项名` 的 `父号.序号` 子条目。
+  查询接口：`ui::id::list_id()` 输出全部 (id, 类型, 上级id, 名称) 条目。
 
 ## DMI 修改范围
 

@@ -2,8 +2,9 @@
 //! DMI components: declarative wrappers over egui base widgets.
 
 use crate::ui::design::DesignLanguages;
+use crate::ui::id::{self, DMIId, DMIWidgetKind};
 use egui::{
-    Color32, ComboBox, IdSalt, Margin, RadioButton, Response, RichText, Sense, Stroke,
+    Color32, ComboBox, Id, IdSalt, Margin, RadioButton, Response, RichText, Sense, Stroke,
     StrokeKind, TextEdit, TextWrapMode, TextStyle, Ui, WidgetText,
 };
 use egui::emath::Numeric;
@@ -19,8 +20,10 @@ use std::ops::RangeInclusive;
 /// `DMI标记`: 本结构是 DMI 协议对 Response 的替代占位——
 /// 接入 `src/dmi/` 数据通道后，调用方只面向 DMIUpdate，不再接触 Response。
 /// Marker: this will replace `Response` once the dmi/ channel lands.
-#[must_use = "组件交互结果应被检查 / inspect the widget interaction result"]
 pub struct DMIUpdate {
+    /// 组件的 DMI 编号（未来 JSON 调用的 target_id 来源）。
+    /// DMI id of the widget, the future JSON target_id source.
+    pub id: DMIId,
     /// 底层 egui 响应（迁移期保留，DMI 通道就绪后移除）。
     /// Underlying egui response (kept during migration, removed later).
     pub response: Response,
@@ -29,10 +32,16 @@ pub struct DMIUpdate {
 }
 
 impl DMIUpdate {
-    /// 由普通响应构建，changed 采用 egui changed 语义。
-    /// Builds from a response using egui changed semantics.
-    fn from_response(response: Response) -> Self {
-        Self { changed: response.changed(), response }
+    /// 由编号与响应构建，changed 采用 egui changed 语义。
+    /// Builds from id and response using egui changed semantics.
+    fn from_response(id: DMIId, response: Response) -> Self {
+        Self { id, changed: response.changed(), response }
+    }
+
+    /// 由编号、响应与显式 changed 构建。
+    /// Builds from id, response and an explicit changed flag.
+    fn with_changed(id: DMIId, response: Response, changed: bool) -> Self {
+        Self { id, changed, response }
     }
 
     /// 是否被点击。 / Was the widget clicked.
@@ -75,12 +84,15 @@ pub struct DMIButton<'a> {
     enabled: bool,
     /// 悬停提示文本。 / Hover tooltip text.
     tooltip: Option<String>,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
 }
 
 impl<'a> DMIButton<'a> {
     /// 构建普通按钮。 / Build a secondary button.
     pub fn new(text: &'a str) -> Self {
-        Self { text, kind: DMIButtonKind::Secondary, enabled: true, tooltip: None }
+        Self { text, kind: DMIButtonKind::Secondary, enabled: true, tooltip: None, dmi_name: None }
     }
 
     /// 构建主要操作按钮。 / Build a primary action button.
@@ -110,8 +122,15 @@ impl<'a> DMIButton<'a> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
     /// 渲染按钮：测量文字、分配区域、按状态绘制底色与文字。
     /// Renders: measures text, allocates rect, paints fill and label by state.
+    #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let tokens = DesignLanguages::from_ui(ui);
         let colors = tokens.colors;
@@ -167,7 +186,9 @@ impl<'a> DMIButton<'a> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        DMIUpdate { changed: response.clicked(), response }
+        let dmi_id = id::allocate(response.id, DMIWidgetKind::Button, self.dmi_name.as_deref(), None);
+        let clicked = response.clicked();
+        DMIUpdate::with_changed(dmi_id, response, clicked)
     }
 }
 
@@ -175,8 +196,8 @@ impl<'a> DMIButton<'a> {
 // 标签文本 Label
 // ============================================================================
 
-/// 封装标签：标题/正文/说明/等宽四种档位。
-/// Label wrapper: heading, body, caption and monospace tiers.
+/// 封装标签：标题/正文/说明/等宽四档；显式 dmi_name 才登记编号。
+/// Label wrapper: four tiers; registers only when explicitly named.
 #[derive(Debug, Clone)]
 pub struct DMILabel<'a> {
     /// 标签文本。 / Label text.
@@ -187,12 +208,15 @@ pub struct DMILabel<'a> {
     style: TextStyle,
     /// 悬停提示文本。 / Hover tooltip text.
     tooltip: Option<String>,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
 }
 
 impl<'a> DMILabel<'a> {
     /// 构建正文标签。 / Build a body label.
     pub fn body(text: &'a str) -> Self {
-        Self { text, caption: false, style: TextStyle::Body, tooltip: None }
+        Self { text, caption: false, style: TextStyle::Body, tooltip: None, dmi_name: None }
     }
 
     /// 构建标题标签。 / Build a heading label.
@@ -216,6 +240,12 @@ impl<'a> DMILabel<'a> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
     /// 渲染标签：字号走 egui 文本样式，颜色取自调色板。
     /// Renders label: size via egui text styles, color via palette.
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
@@ -233,7 +263,13 @@ impl<'a> DMILabel<'a> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        DMIUpdate::from_response(response)
+        // 匿名标签不登记：显示文本频繁变动，登记会反哺编号表自我增长。
+        // Unnamed labels skip registration to stop registry self-amplification.
+        let dmi_id = match &self.dmi_name {
+            Some(given) => id::allocate(response.id, DMIWidgetKind::Label, Some(given), None),
+            None => DMIId::SYSTEM,
+        };
+        DMIUpdate::from_response(dmi_id, response)
     }
 }
 
@@ -252,12 +288,15 @@ pub struct DMITextInput<'a> {
     password: bool,
     /// 是否可交互。 / Whether interactive.
     enabled: bool,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
 }
 
 impl<'a> DMITextInput<'a> {
     /// 构建输入框并绑定文本。 / Build a field bound to the text.
     pub fn new(buffer: &'a mut String) -> Self {
-        Self { buffer, placeholder: String::new(), password: false, enabled: true }
+        Self { buffer, placeholder: String::new(), password: false, enabled: true, dmi_name: None }
     }
 
     /// 设置占位提示文本。 / Set the placeholder text.
@@ -278,8 +317,15 @@ impl<'a> DMITextInput<'a> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
     /// 渲染输入框：框体底色/描边/圆角来自设计语言。
     /// Renders the field with frame colors and radius from tokens.
+    #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let tokens = DesignLanguages::from_ui(ui);
         let mut edit = TextEdit::singleline(self.buffer)
@@ -297,7 +343,9 @@ impl<'a> DMITextInput<'a> {
             .fill(tokens.colors.surface)
             .stroke(Stroke::new(1.0, tokens.colors.separator))
             .corner_radius(tokens.spacing.corner(tokens.spacing.radius_sm));
-        DMIUpdate::from_response(ui.add(edit.frame(frame)))
+        let response = ui.add(edit.frame(frame));
+        let dmi_id = id::allocate(response.id, DMIWidgetKind::TextInput, self.dmi_name.as_deref(), None);
+        DMIUpdate::from_response(dmi_id, response)
     }
 }
 
@@ -316,12 +364,15 @@ pub struct DMICheckbox<'a> {
     enabled: bool,
     /// 悬停提示文本。 / Hover tooltip text.
     tooltip: Option<String>,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
 }
 
 impl<'a> DMICheckbox<'a> {
     /// 构建复选框并绑定布尔值。 / Build a checkbox bound to the bool.
     pub fn new(checked: &'a mut bool, text: &'a str) -> Self {
-        Self { checked, text, enabled: true, tooltip: None }
+        Self { checked, text, enabled: true, tooltip: None, dmi_name: None }
     }
 
     /// 设置是否可交互。 / Set interactivity.
@@ -336,7 +387,14 @@ impl<'a> DMICheckbox<'a> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
     /// 渲染复选框。 / Renders the checkbox.
+    #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let box_widget = egui::Checkbox::new(self.checked, self.text);
         let response = ui.add_enabled(self.enabled, box_widget);
@@ -344,7 +402,8 @@ impl<'a> DMICheckbox<'a> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        DMIUpdate::from_response(response)
+        let dmi_id = id::allocate(response.id, DMIWidgetKind::Checkbox, self.dmi_name.as_deref(), None);
+        DMIUpdate::from_response(dmi_id, response)
     }
 }
 
@@ -361,12 +420,18 @@ pub struct DMIRadio<'a> {
     text: &'a str,
     /// 是否可交互。 / Whether interactive.
     enabled: bool,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
+    /// 组名：同组单选框归属统一父号并领取小数子号。
+    /// Group name: radios share one parent id and get dotted child ids.
+    group: Option<String>,
 }
 
 impl<'a> DMIRadio<'a> {
     /// 构建单选框。 / Build a radio button.
     pub fn new(selected: bool, text: &'a str) -> Self {
-        Self { selected, text, enabled: true }
+        Self { selected, text, enabled: true, dmi_name: None, group: None }
     }
 
     /// 设置是否可交互。 / Set interactivity.
@@ -375,12 +440,39 @@ impl<'a> DMIRadio<'a> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
+    /// 归入单选组：父号统一可寻址，子号形如 父号.序号（dmi.md 两种编号并存）。
+    /// Joins a radio group: one parent id plus dotted child ids.
+    pub fn group(mut self, name: impl Into<String>) -> Self {
+        self.group = Some(name.into());
+        self
+    }
+
     /// 渲染单选框；changed 语义为"本次被点选"。
     /// Renders radio; changed means "picked on this click".
+    #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let radio = RadioButton::new(self.selected, self.text);
         let response = ui.add_enabled(self.enabled, radio);
-        DMIUpdate { changed: response.clicked(), response }
+        let clicked = response.clicked();
+        // 组模式：组名首现发统一父号，本控件按"组名_选项文本"领取小数子号。
+        // Group mode: first sighting issues the shared parent id; this widget
+        // takes a dotted child id named "<group>_<option>".
+        let dmi_id = match &self.group {
+            Some(group_name) => {
+                let parent_id =
+                    id::allocate(response.id, DMIWidgetKind::Radio, Some(group_name), None);
+                let child_name = format!("{group_name}_{}", sanitize_name(self.text));
+                id::allocate_child(response.id, DMIWidgetKind::Radio, &child_name, parent_id)
+            }
+            None => id::allocate(response.id, DMIWidgetKind::Radio, self.dmi_name.as_deref(), None),
+        };
+        DMIUpdate::with_changed(dmi_id, response, clicked)
     }
 }
 
@@ -399,13 +491,18 @@ pub struct DMISelect<'a, Value: PartialEq + Clone + std::fmt::Display> {
     options: &'a [Value],
     /// 是否可交互。 / Whether interactive.
     enabled: bool,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
+    /// 子项单独编号开关。 / Issue dotted ids for each option.
+    individual_ids: bool,
 }
 
 impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
     /// 构建下拉菜单并绑定当前值与候选项。
     /// Build a select bound to current value and options.
     pub fn new(label: &'a str, current: &'a mut Value, options: &'a [Value]) -> Self {
-        Self { label, current, options, enabled: true }
+        Self { label, current, options, enabled: true, dmi_name: None, individual_ids: false }
     }
 
     /// 设置是否可交互。 / Set interactivity.
@@ -414,8 +511,22 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
+    /// 开启子项"父号.序号"独立编号模式。
+    /// Enable dotted child ids like parent.1, parent.2.
+    pub fn individual_ids(mut self) -> Self {
+        self.individual_ids = true;
+        self
+    }
+
     /// 渲染下拉菜单：弹出层逐项可选，选中写回并置 changed。
     /// Renders combo; picking an option writes back with changed set.
+    #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let tokens = DesignLanguages::from_ui(ui);
         let combo = ComboBox::from_id_salt(IdSalt::new(self.label.to_owned()))
@@ -424,10 +535,14 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         // 禁用态通过 add_enabled_ui 屏蔽整棵子 UI。
         // Disabled state blocks the whole child ui via add_enabled_ui.
         let mut picked: Option<Value> = None;
+        let mut drawn_options: Vec<(String, Id)> = Vec::new();
         let outer = ui.add_enabled_ui(self.enabled, |ui| {
             combo.show_ui(ui, |ui| {
                 for option in self.options {
-                    if ui.selectable_label(option == self.current, option.to_string()).clicked() {
+                    let option_response =
+                        ui.selectable_label(option == self.current, option.to_string());
+                    drawn_options.push((option.to_string(), option_response.id));
+                    if option_response.clicked() {
                         picked = Some(option.clone());
                     }
                 }
@@ -435,12 +550,22 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
             })
         });
         let inner = outer.inner;
+        let dmi_id = id::allocate(inner.response.id, DMIWidgetKind::Select, self.dmi_name.as_deref(), None);
+        // 独立编号模式：为已绘制选项登记 父号.序号 子条目。
+        // Dotted mode: register parent.n records for drawn options.
+        if self.individual_ids {
+            let base_name = id::name_of(dmi_id).unwrap_or_default();
+            for (option_text, option_egui_id) in drawn_options {
+                let child_name = format!("{base_name}_{}", sanitize_name(&option_text));
+                id::allocate_child(option_egui_id, DMIWidgetKind::Select, &child_name, dmi_id);
+            }
+        }
         let chosen = inner.inner.flatten();
         let changed = chosen.is_some();
         if let Some(value) = chosen {
             *self.current = value;
         }
-        DMIUpdate { changed, response: inner.response }
+        DMIUpdate::with_changed(dmi_id, inner.response, changed)
     }
 }
 
@@ -459,12 +584,15 @@ pub struct DMISlider<'a, Value: Numeric> {
     label: Option<&'a str>,
     /// 悬停提示文本。 / Hover tooltip text.
     tooltip: Option<String>,
+    /// DMI 注册名称（命名不同则额外分配编号）。
+    /// Explicit DMI name; a different name allocates its own id.
+    dmi_name: Option<String>,
 }
 
 impl<'a, Value: Numeric> DMISlider<'a, Value> {
     /// 构建滑块并绑定数值与范围。 / Build a slider bound to value and range.
     pub fn new(value: &'a mut Value, range: impl Into<RangeInclusive<Value>>) -> Self {
-        Self { value, range: range.into(), label: None, tooltip: None }
+        Self { value, range: range.into(), label: None, tooltip: None, dmi_name: None }
     }
 
     /// 设置标签文本。 / Set the label text.
@@ -479,7 +607,14 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
         self
     }
 
+    /// 设置 DMI 注册名称。 / Set the DMI registry name.
+    pub fn dmi_name(mut self, name: impl Into<String>) -> Self {
+        self.dmi_name = Some(name.into());
+        self
+    }
+
     /// 渲染滑块。 / Renders the slider.
+    #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let mut slider = egui::Slider::new(self.value, self.range);
         if let Some(label) = self.label {
@@ -490,8 +625,24 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        DMIUpdate::from_response(response)
+        let dmi_id = id::allocate(response.id, DMIWidgetKind::Slider, self.dmi_name.as_deref(), None);
+        DMIUpdate::from_response(dmi_id, response)
     }
+}
+
+/// 清洗选项文本为名称片段（小写，符号转下划线）。
+/// Sanitizes option text into a lowercase name slug.
+fn sanitize_name(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            let lowered = character.to_ascii_lowercase();
+            if lowered.is_alphanumeric() || lowered == '_' || lowered == '-' {
+                lowered
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -511,5 +662,108 @@ mod tests {
             changed = update.changed();
         });
         assert!(!clicked && !changed);
+    }
+
+    /// 多帧重复渲染不得使注册表增长：匿名标签免登记、命名组件复用。
+    /// 300 frames must not grow the registry: free labels skip, names reuse.
+    #[test]
+    fn frames_do_not_grow_registry() {
+        let mut buffer = String::new();
+        let mut flag = false;
+        let mut number = 0.5f32;
+        let options = vec!["甲".to_owned(), "乙".to_owned()];
+        let mut chosen = options[0].clone();
+        for _frame in 0..300 {
+            egui::__run_test_ui(|ui| {
+                DesignLanguages::install(ui.ctx());
+                let _ = DMIButton::primary("帧测").dmi_name("case_frame_button").show(ui);
+                // 未命名显示行：复刻旧版注册表/日志面板的排版来源。
+                // Unnamed display lines: the old registry/log row pattern.
+                DMILabel::mono("(1, \"button\", 0, \"case_frame_button\")").show(ui);
+                DMILabel::caption("快照说明").show(ui);
+                let _ = DMITextInput::new(&mut buffer).dmi_name("case_frame_field").show(ui);
+                let _ = DMICheckbox::new(&mut flag, "帧测").dmi_name("case_frame_check").show(ui);
+                let _ = DMIRadio::new(true, "帧测").dmi_name("case_frame_radio").show(ui);
+                let _ = DMISelect::new("帧测", &mut chosen, &options).dmi_name("case_frame_select").show(ui);
+                let _ = DMISlider::new(&mut number, 0.0..=1.0).dmi_name("case_frame_slider").show(ui);
+            });
+        }
+        let grown = id::list_id()
+            .iter()
+            .filter(|record| record.name.starts_with("case_frame_"))
+            .count();
+        assert_eq!(grown, 6, "300 帧只应新增本用例的 6 条命名控件（匿名标签不登记）");
+    }
+
+    /// 单选组重复渲染：1 父号 + 3 子号，不重号不增长。
+    /// Radio group: one parent, three dotted children, stable across frames.
+    #[test]
+    fn radio_group_registers_parent_and_children() {
+        for _frame in 0..3 {
+            egui::__run_test_ui(|ui| {
+                DesignLanguages::install(ui.ctx());
+                for option in ["甲", "乙", "丙"] {
+                    let _ = DMIRadio::new(false, option).group("case_group_radio").show(ui);
+                }
+            });
+        }
+        let records = id::list_id();
+        let group_records: Vec<_> = records
+            .iter()
+            .filter(|record| record.name.starts_with("case_group_radio"))
+            .collect();
+        assert_eq!(group_records.len(), 4, "应为 1 个父号 + 3 个子号");
+        let parent = group_records.iter().find(|record| record.id.minor == 0).unwrap();
+        assert_eq!(parent.name, "case_group_radio");
+        let minors: Vec<u32> = group_records
+            .iter()
+            .filter(|record| record.id.minor != 0)
+            .map(|record| record.id.minor)
+            .collect();
+        assert_eq!(minors, vec![1, 2, 3], "子号按出现顺序 父号.1/.2/.3");
+        for record in group_records.iter().filter(|record| record.id.minor != 0) {
+            assert_eq!(record.parent, parent.id, "子号 parent 指向父号");
+        }
+    }
+
+    /// 命名标签登记入表（kind=label），匿名标签保持免登记。
+    /// Named labels register as kind label; anonymous ones stay untracked.
+    #[test]
+    fn named_label_registers_anonymous_does_not() {
+        egui::__run_test_ui(|ui| {
+            DesignLanguages::install(ui.ctx());
+            let _ = DMILabel::heading("章节").dmi_name("case_named_section_label").show(ui);
+            DMILabel::caption("匿名行").show(ui);
+        });
+        let records = id::list_id();
+        let named = records
+            .iter()
+            .find(|record| record.name == "case_named_section_label");
+        assert!(named.is_some(), "命名标签应入表");
+        assert_eq!(named.unwrap().kind, DMIWidgetKind::Label);
+        let anonymous = records
+            .iter()
+            .filter(|record| record.name.starts_with("label-"))
+            .count();
+        assert_eq!(anonymous, 0, "匿名标签不得登记");
+    }
+
+    /// 验证组件注册名称与编号写入注册表。
+    /// Verifies explicit DMI names land in the registry with ids.
+    #[test]
+    fn named_button_records_dmi_id() {
+        use crate::ui::id::list_id;
+        let mut dmi_id = DMIId::SYSTEM;
+        egui::__run_test_ui(|ui| {
+            DesignLanguages::install(ui.ctx());
+            let update = DMIButton::primary("注册").dmi_name("case_register_button").show(ui);
+            dmi_id = update.id;
+        });
+        assert!(!dmi_id.is_system());
+        assert!(list_id().iter().any(|record| {
+            record.id == dmi_id
+                && record.name == "case_register_button"
+                && record.kind == DMIWidgetKind::Button
+        }));
     }
 }
