@@ -190,8 +190,9 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
   返回子号（点的是哪个），父号留在表里供整组操作——dmi.md 的两种编号方式同时成立。
   设计理由：`DMIRadio` 保持单控件 API（与 demo 循环写法一致），组语义只加一个
   builder，不引入新组件类型；
-- **`DMIUpdate::from_response / with_changed`**：私有构造器强制所有出口都带 id
-  字段，避免忘记接线。
+- **`DMIUpdate::new / from_parts`**：纯数据构造器。`from_parts` 私有且只收 `&Response`，
+  在 show() 内部提取 `clicked/changed` 两个状态位后 Response 即失效——出口结构上
+  不可能再把 Response 带出去，id 字段也不可能被忘记接线。
 
 ## 5. 并发与生命周期
 

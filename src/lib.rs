@@ -3,4 +3,5 @@
 //! 这是一个用于帮助大模型更好地进行GUI开发的项目。
 //! This is a project designed to assist large models in better GUI development.
 
+pub mod dmi;
 pub mod ui;

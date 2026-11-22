@@ -10,27 +10,32 @@
 
 ```text
 egui-dmi/
-├── Cargo.toml                     # 包清单：库名 egui_dmi，edition 2024，依赖 egui 0.37。
+├── Cargo.toml                     # 包清单：库名 egui_dmi，edition 2024，workspace 含 demo；依赖 egui 0.37、serde_json。
 ├── src/
 │   ├── lib.rs                     # 项目简介与模块挂载入口。
 │   ├── ui.rs                      # UI 模块根：导出 design 与 components 两层公共 API。
 │   ├── ui/
-│   │   ├── id.rs                  # 组件ID注册表：DMIId 两级编号（0号系统保留）、(egui id,名称)复用映射、
-│   │   │                          #   DMIWidgetKind 类型枚举、allocate/allocate_child 发号、list_id() 查询。
+│   │   ├── id.rs                  # 组件ID注册表：DMIId 主号+小数路径（4层上限，0号系统保留）、
+│   │   │                          #   名称/位置双键复用映射、allocate/allocate_child 发号、list_id() Arc 快照。
 │   │   ├── design.rs              # 设计语言（单文件）：
 │   │   │                          #   ColorLanguages 深/浅调色板 + hover/press/disabled/选中混色规则；
 │   │   │                          #   SpacingTokens 内边距/圆角/控件尺寸令牌；
 │   │   │                          #   DesignLanguages 聚合 + apply/install 写入 egui 全局样式（深浅两套）。
-│   │   └── components.rs          # DMI 组件（单文件）：每组件带 dmi_name 注册；DMIUpdate 携带 id；
-│   │                              #   DMISelect 支持 individual_ids 小数子号；
-│   │                              #   DMIUpdate 统一返回（DMI 取代 Response 的占位标记）；
+│   │   └── components.rs          # DMI 组件（单文件）：七组件均带 dmi_name 登记出口；
+│   │                              #   DMIUpdate 为纯数据 {id, clicked, changed}（Response 不出 show）；
 │   │                              #   DMIButton(primary/destructive/text…)自绘四态着色；
-│   │                              #   DMILabel / DMITextInput / DMICheckbox / DMIRadio / DMISelect / DMISlider。
-│   └── dmi/                       # （空）预留给 DMI 声明接口任务。
+│   │                              #   DMISelect 扁平 individual_ids 子号 / grouped 分组三层号；
+│   │                              #   DMIRadio group() 统一父号+小数子号；
+│   │                              #   DMILabel / DMITextInput / DMICheckbox / DMISlider。
+│   ├── dmi.rs                   # DMI 模块根：声明 call/interface 两区并再导出公开契约。
+│   └── dmi/
+│       ├── call.rs              # 接口总调用区：DMICommand/DMIRequestType/DMIComplexity/DMIFailure 契约，
+│       │                        #   parse_command 解析、ok_response/fail_response 分层应答、call_dmi 分发器。
+│       └── interface.rs         # 各接口具体实现区：greet 示例接口（OBSERVATION 三档应答）。
 ├── demo/
 │   └── dmi_gallery/               # eframe 组件画廊示例（workspace 成员，cargo run -p dmi-gallery）。
 │       ├── Cargo.toml             # 依赖：eframe 0.37 + path 依赖 egui-dmi。
-│       └── src/main.rs            # GalleryApp：七组件实测 + list_id() 实时注册表 + 交互日志 + 主题切换。
+│       └── src/main.rs            # GalleryApp：七组件实测 + list_id() 注册表面板 + 交互日志 + 主题切换 + DMI 自检分区。
 ├── docs/
 │   ├── design-system.md           # 设计语言与组件视觉规范说明。
 │   └── id-system.md               # DMI 组件ID分配系统：运作流程、reuse 机制逐方法设计理由、边界与演进。
@@ -43,6 +48,8 @@ egui-dmi/
 
 ## 变更记录说明
 
+- 2026-11-22：DMI Phase 2 落地——`call_dmi` 统一调用入口 + `greet` 示例接口（硬编码调用）；
+  `DMIUpdate` 纯数据化去 Response；demo 新增"DMI 自检"分区；依赖新增 serde_json。
 - 2026-11-22：`DMISelect` 新增 `grouped` 分组下拉（组=父号.n，选项=父号.n.m），
   demo"场景预设"落地首个三层编号实例；详见 changelog/2026-11-22-grouped-select-multilevel.md。
 - 2026-11-22：`DMIId` 升级为"主号+小数路径"（上限 4 层，`is_root/level/child→Option`），

@@ -14,44 +14,33 @@ use std::ops::RangeInclusive;
 // 统一返回载体 DMI update
 // ============================================================================
 
-/// 组件 `show()` 的统一返回；当前承载 egui::Response 的状态查询。
-/// Shared return of `show()`; currently delegates to egui::Response.
+/// 组件 `show()` 的统一返回：纯 DMI 数据记录，egui::Response 不再越过出口。
+/// Shared widget return as pure DMI data; the egui Response stays inside show().
 ///
-/// `DMI标记`: 本结构是 DMI 协议对 Response 的替代占位——
-/// 接入 `src/dmi/` 数据通道后，调用方只面向 DMIUpdate，不再接触 Response。
-/// Marker: this will replace `Response` once the dmi/ channel lands.
+/// `DMI标记`：id 即未来 JSON 调用的 target_id；clicked/changed 两个状态位
+/// 将由运行时通道序列化回传模型，更细状态按需增补字段而不回引 Response。
+/// Marker: id feeds future JSON target_id; flags serialize over the runtime channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DMIUpdate {
-    /// 组件的 DMI 编号（未来 JSON 调用的 target_id 来源）。
+    /// 组件的 DMI 编号（未来 JSON target_id 来源）。
     /// DMI id of the widget, the future JSON target_id source.
     pub id: DMIId,
-    /// 底层 egui 响应（迁移期保留，DMI 通道就绪后移除）。
-    /// Underlying egui response (kept during migration, removed later).
-    pub response: Response,
-    /// 本次交互是否改变了绑定数据。 / Whether this interaction changed bound data.
+    /// 本次交互是否被点击。 / Whether the widget was clicked this frame.
+    pub clicked: bool,
+    /// 本次交互是否改变了绑定数据。 / Whether bound data changed this frame.
     pub changed: bool,
 }
 
 impl DMIUpdate {
-    /// 由编号与响应构建，changed 采用 egui changed 语义。
-    /// Builds from id and response using egui changed semantics.
-    fn from_response(id: DMIId, response: Response) -> Self {
-        Self { id, changed: response.changed(), response }
+    /// 由编号与两个状态位构造。 / Build from id and the two state flags.
+    pub fn new(id: DMIId, clicked: bool, changed: bool) -> Self {
+        Self { id, clicked, changed }
     }
 
-    /// 由编号、响应与显式 changed 构建。
-    /// Builds from id, response and an explicit changed flag.
-    fn with_changed(id: DMIId, response: Response, changed: bool) -> Self {
-        Self { id, changed, response }
-    }
-
-    /// 是否被点击。 / Was the widget clicked.
-    pub fn clicked(&self) -> bool {
-        self.response.clicked()
-    }
-
-    /// 是否发生数据变更。 / Did bound data change.
-    pub fn changed(&self) -> bool {
-        self.changed
+    /// 从 egui 响应提取状态位；仅在 show() 内部使用，出口不外泄 Response。
+    /// Extracts flags from a response; internal to show(), never leaks out.
+    fn from_parts(id: DMIId, response: &Response) -> Self {
+        Self { id, clicked: response.clicked(), changed: response.changed() }
     }
 }
 
@@ -188,7 +177,7 @@ impl<'a> DMIButton<'a> {
         };
         let dmi_id = id::allocate(response.id, DMIWidgetKind::Button, self.dmi_name.as_deref(), None);
         let clicked = response.clicked();
-        DMIUpdate::with_changed(dmi_id, response, clicked)
+        DMIUpdate::new(dmi_id, clicked, clicked)
     }
 }
 
@@ -269,7 +258,7 @@ impl<'a> DMILabel<'a> {
             Some(given) => id::allocate(response.id, DMIWidgetKind::Label, Some(given), None),
             None => DMIId::SYSTEM,
         };
-        DMIUpdate::from_response(dmi_id, response)
+        DMIUpdate::from_parts(dmi_id, &response)
     }
 }
 
@@ -345,7 +334,7 @@ impl<'a> DMITextInput<'a> {
             .corner_radius(tokens.spacing.corner(tokens.spacing.radius_sm));
         let response = ui.add(edit.frame(frame));
         let dmi_id = id::allocate(response.id, DMIWidgetKind::TextInput, self.dmi_name.as_deref(), None);
-        DMIUpdate::from_response(dmi_id, response)
+        DMIUpdate::from_parts(dmi_id, &response)
     }
 }
 
@@ -403,7 +392,7 @@ impl<'a> DMICheckbox<'a> {
             None => response,
         };
         let dmi_id = id::allocate(response.id, DMIWidgetKind::Checkbox, self.dmi_name.as_deref(), None);
-        DMIUpdate::from_response(dmi_id, response)
+        DMIUpdate::from_parts(dmi_id, &response)
     }
 }
 
@@ -472,7 +461,7 @@ impl<'a> DMIRadio<'a> {
             }
             None => id::allocate(response.id, DMIWidgetKind::Radio, self.dmi_name.as_deref(), None),
         };
-        DMIUpdate::with_changed(dmi_id, response, clicked)
+        DMIUpdate::new(dmi_id, clicked, clicked)
     }
 }
 
@@ -622,7 +611,7 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         if let Some(value) = chosen {
             *self.current = value;
         }
-        DMIUpdate::with_changed(dmi_id, inner.response, changed)
+        DMIUpdate::new(dmi_id, inner.response.clicked(), changed)
     }
 }
 
@@ -683,7 +672,7 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
             None => response,
         };
         let dmi_id = id::allocate(response.id, DMIWidgetKind::Slider, self.dmi_name.as_deref(), None);
-        DMIUpdate::from_response(dmi_id, response)
+        DMIUpdate::from_parts(dmi_id, &response)
     }
 }
 
@@ -715,8 +704,8 @@ mod tests {
         egui::__run_test_ui(|ui| {
             DesignLanguages::install(ui.ctx());
             let update = DMIButton::primary("确定").tooltip("提交").show(ui);
-            clicked = update.clicked();
-            changed = update.changed();
+            clicked = update.clicked;
+            changed = update.changed;
         });
         assert!(!clicked && !changed);
     }
@@ -825,6 +814,21 @@ mod tests {
             .filter(|record| record.name.starts_with("label-"))
             .count();
         assert_eq!(anonymous, 0, "匿名标签不得登记");
+    }
+
+    /// DMIUpdate 是可复制、可比对的纯数据记录（编译期即排除 Response 泄漏）。
+    /// DMIUpdate is copyable comparable pure data, proven at compile time.
+    #[test]
+    fn dmi_update_is_pure_data() {
+        let mut interacted = false;
+        egui::__run_test_ui(|ui| {
+            DesignLanguages::install(ui.ctx());
+            let update = DMIButton::primary("纯数据").dmi_name("case_pure_data_button").show(ui);
+            let copied = update;
+            assert_eq!(update, copied);
+            interacted = copied.clicked || copied.changed;
+        });
+        assert!(!interacted);
     }
 
     /// 验证组件注册名称与编号写入注册表。

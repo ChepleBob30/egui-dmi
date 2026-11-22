@@ -62,14 +62,30 @@ DMISlider::new(&mut volume, 0.0..=100.0).show(ui);
 
 - `DMIButton` 自绘四态（禁用 > 按下 > 悬停 > 常态），其余组件委托 egui 原生控件、
   由安装后的全局样式统一着色。
-- `DMIUpdate` 现封装 `egui::Response`（`clicked()/changed()`），并携带 `id: DMIId`
-  ——组件在 `src/ui/id.rs` 注册表中的两级编号（如 `3`、`5.2`，0 号系统保留）；
-  源码中已用 `DMI标记` 注释声明：`src/dmi/` 数据通道落地后，DMIUpdate 将完全取代 Response。
+- `DMIUpdate` 是纯数据记录 `{ id, clicked, changed }`（`Copy + PartialEq`）：
+  `egui::Response` 已在组件出口处消化完毕、不再外泄；`id` 即组件在注册表中的编号
+  （如 `3`、`5.2`、`6.1.2`，0 号系统保留），也是未来 JSON 调用的 `target_id`。
 - 编号复用规则：键 =（egui id, DMI 名称）。同一 egui id 下**命名不同即额外分配新编号**；
   名称相同则跨帧复用。组件可用 `.dmi_name("theme_selector")` 显式命名（便于 DMI 分配 id），
   `DMISelect` 还可用 `.individual_ids()` 让每个选项获得 `父名_选项名` 的 `父号.序号` 子条目；
   `DMISelect::grouped` 分组下拉自动启用多层编号：组登记 `父号.n`，组内选项登记 `父号.n.m`。
   查询接口：`ui::id::list_id()` 输出全部 (id, 类型, 上级id, 名称) 条目。
+
+## DMI 统一调用入口
+
+```rust
+// 硬编码调用：完整 JSON 命令进，JSON 应答出（src/dmi/call.rs::call_dmi）。
+let response: String = egui_dmi::dmi::call_dmi(
+    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"standard\"}",
+);
+```
+
+- 命令信封四字段：`request_type`（ACCESS/STATE/OBSERVATION 大写）、`interface`、
+  `target_id`（数字一级小数，多级用点分字符串）、`complexity`（simple/standard/complex 小写）；
+- 失败应答分层：simple 仅 `result`；standard 加 `reason` 与 `error_code`；
+  complex 再加 `suggestion`；解析失败的命令统一按 standard 兜底；
+- 示例接口 `greet`（OBSERVATION、0 号）三档分别返回欢迎语、欢迎语+项目名、
+  欢迎语+项目名+依赖；demo 画廊"DMI 自检"分区即该入口的界面化演示。
 
 ## DMI 修改范围
 

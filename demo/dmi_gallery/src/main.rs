@@ -44,6 +44,9 @@ struct GalleryApp {
     volume_value: i32,
     /// 交互日志（最新在前）。 / Interaction log, newest first.
     interaction_log: Vec<String>,
+    /// 最近一次 DMI 硬编码调用的应答 JSON。
+    /// JSON response of the latest hardcoded call_dmi probe.
+    probe_output: String,
     /// 注册表行文本缓存，仅版本变化时重建。
     /// Cached registry rows, rebuilt only on revision change.
     registry_cache: Vec<String>,
@@ -70,6 +73,7 @@ impl GalleryApp {
             speed_value: 1.0,
             volume_value: 60,
             interaction_log: Vec::new(),
+            probe_output: "（点击上方按钮发起硬编码调用）".to_owned(),
             registry_cache: Vec::new(),
             registry_revision: 0,
         }
@@ -90,7 +94,7 @@ impl GalleryApp {
                 .dmi_name("save_button")
                 .tooltip("写入当前配置")
                 .show(ui);
-            if save_update.clicked() {
+            if save_update.clicked {
                 self.push_log(format!("[{}] 保存设置被点击", save_update.id));
             }
             let delete_update = DMIButton::destructive("删除账号")
@@ -98,11 +102,11 @@ impl GalleryApp {
                 .enabled(!self.username.is_empty())
                 .tooltip("仅用户名非空时可删")
                 .show(ui);
-            if delete_update.clicked() {
+            if delete_update.clicked {
                 self.push_log(format!("[{}] 删除账号被点击", delete_update.id));
             }
             let learn_update = DMIButton::text("了解更多").dmi_name("learn_button").show(ui);
-            if learn_update.clicked() {
+            if learn_update.clicked {
                 self.push_log(format!("[{}] 了解更多被点击", learn_update.id));
             }
         });
@@ -118,7 +122,7 @@ impl GalleryApp {
                 .dmi_name("username_field")
                 .placeholder("输入用户名…")
                 .show(ui);
-            if username_update.changed() {
+            if username_update.changed {
                 self.push_log(format!("[{}] 用户名长度 {}", username_update.id, self.username.len()));
             }
         });
@@ -129,7 +133,7 @@ impl GalleryApp {
                 .password(true)
                 .placeholder("输入密码…")
                 .show(ui);
-            if password_update.changed() {
+            if password_update.changed {
                 // 日志只记长度，不记录密码内容。
                 // Log length only, never the password itself.
                 self.push_log(format!("[{}] 密码长度 {}", password_update.id, self.password.len()));
@@ -138,7 +142,7 @@ impl GalleryApp {
         let notify_update = DMICheckbox::new(&mut self.notifications_on, "开启通知")
             .dmi_name("notify_checkbox")
             .show(ui);
-        if notify_update.changed() {
+        if notify_update.changed {
             self.push_log(format!("[{}] 通知开关 → {}", notify_update.id, self.notifications_on));
         }
     }
@@ -163,7 +167,7 @@ impl GalleryApp {
                 let radio_update = DMIRadio::new(self.quality_mode == option, &option)
                     .group("quality_radio")
                     .show(ui);
-                if radio_update.clicked() {
+                if radio_update.clicked {
                     self.quality_mode = option.clone();
                     self.push_log(format!("[{}] 画质切换 → {option}", radio_update.id));
                 }
@@ -181,7 +185,7 @@ impl GalleryApp {
             .dmi_name("theme_selector")
             .individual_ids()
             .show(ui);
-            if appearance_update.changed() {
+            if appearance_update.changed {
                 self.push_log(format!("[{}] 外观切换 → {}", appearance_update.id, self.appearance_name));
                 // 仅在选中变化时切换主题，避免每帧写入选项。
                 // Switch theme only on change, not every frame.
@@ -200,7 +204,7 @@ impl GalleryApp {
             )
             .dmi_name("operation_mode")
             .show(ui);
-            if operation_update.changed() {
+            if operation_update.changed {
                 self.push_log(format!("[{}] 模式切换 → {}", operation_update.id, self.operation_name));
             }
         });
@@ -212,7 +216,7 @@ impl GalleryApp {
                 DMISelect::grouped("preset_selector", &mut self.preset_name, PRESET_GROUPS)
                     .dmi_name("preset_selector")
                     .show(ui);
-            if preset_update.changed() {
+            if preset_update.changed {
                 self.push_log(format!("[{}] 预设切换 → {}", preset_update.id, self.preset_name));
             }
         });
@@ -230,7 +234,7 @@ impl GalleryApp {
                 .label("速度")
                 .dmi_name("speed_slider")
                 .show(ui);
-            if speed_update.changed() {
+            if speed_update.changed {
                 self.push_log(format!("[{}] 速度 → {:.2}", speed_update.id, self.speed_value));
             }
         });
@@ -239,10 +243,48 @@ impl GalleryApp {
                 .label("音量")
                 .dmi_name("volume_slider")
                 .show(ui);
-            if volume_update.changed() {
+            if volume_update.changed {
                 self.push_log(format!("[{}] 音量 → {}", volume_update.id, self.volume_value));
             }
         });
+    }
+
+    /// DMI 自检分区：硬编码调用 call_dmi，验证统一入口与分层应答。
+    /// Probe section: hardcoded call_dmi checks the entry and tiering.
+    fn show_dmi_probe_section(&mut self, ui: &mut egui::Ui) {
+        DMILabel::heading("DMI 自检（硬编码调用）").dmi_name("section_probe_label").show(ui);
+        ui.horizontal(|ui| {
+            let probes: [(&str, &str, &str); 4] = [
+                (
+                    "greet simple",
+                    "dmi_probe_simple",
+                    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"simple\"}",
+                ),
+                (
+                    "greet standard",
+                    "dmi_probe_standard",
+                    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"standard\"}",
+                ),
+                (
+                    "greet complex",
+                    "dmi_probe_complex",
+                    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"complex\"}",
+                ),
+                (
+                    "非法请求示范",
+                    "dmi_probe_failure",
+                    "{\"request_type\":\"ACCESS\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"complex\"}",
+                ),
+            ];
+            for (label, name, command) in probes {
+                let update = DMIButton::new(label).dmi_name(name).show(ui);
+                if update.clicked {
+                    self.probe_output = egui_dmi::dmi::call_dmi(command);
+                    self.push_log(format!("[{}] DMI 自检完成", update.id));
+                }
+            }
+        });
+        DMILabel::mono(&self.probe_output).show(ui);
     }
 
     /// 规则演示：同一 egui id 按不同命名分配两个编号。
@@ -329,6 +371,8 @@ impl eframe::App for GalleryApp {
                 self.show_choices_section(ui);
                 ui.separator();
                 self.show_sliders_section(ui);
+                ui.separator();
+                self.show_dmi_probe_section(ui);
                 ui.separator();
                 self.show_palette_rule_section(ui);
             });
