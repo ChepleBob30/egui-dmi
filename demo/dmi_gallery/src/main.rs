@@ -7,6 +7,14 @@ use egui_dmi::ui::{
     DesignLanguages, DMICheckbox, DMIButton, DMITextInput, DMILabel, DMIRadio, DMISelect, DMISlider,
 };
 
+/// 场景预设分组：组名 + 组内选项，供多层编号下拉使用。
+/// Static preset groups feeding the multi-level select.
+static PRESET_GROUPS: &[(&str, &[&str])] = &[
+    ("画面", &["明亮", "柔和"]),
+    ("声音", &["清澈", "厚重"]),
+    ("网络", &["低延迟", "稳定优先"]),
+];
+
 /// 画廊应用：持有各组件绑定的数据与交互日志。
 /// Gallery app: bound widget data plus an interaction log.
 struct GalleryApp {
@@ -28,6 +36,8 @@ struct GalleryApp {
     operation_name: String,
     /// 运行模式候选项。 / Runtime mode options.
     operation_options: Vec<String>,
+    /// 场景预设当前值（分组下拉绑定）。 / Current preset from the grouped select.
+    preset_name: &'static str,
     /// 速度滑块绑定。 / Speed slider value.
     speed_value: f32,
     /// 音量滑块绑定。 / Volume slider value.
@@ -56,6 +66,7 @@ impl GalleryApp {
             appearance_options: ["浅色", "深色"].map(str::to_owned).to_vec(),
             operation_name: "标准".to_owned(),
             operation_options: ["标准", "高性能", "节能"].map(str::to_owned).to_vec(),
+            preset_name: "明亮",
             speed_value: 1.0,
             volume_value: 60,
             interaction_log: Vec::new(),
@@ -193,6 +204,22 @@ impl GalleryApp {
                 self.push_log(format!("[{}] 模式切换 → {}", operation_update.id, self.operation_name));
             }
         });
+        ui.horizontal(|ui| {
+            ui.label("预设　");
+            // 多层编号示范：组登记 父号.n，组内选项登记 父号.n.m。
+            // Multi-level demo: groups take parent.n, options parent.n.m.
+            let preset_update =
+                DMISelect::grouped("preset_selector", &mut self.preset_name, PRESET_GROUPS)
+                    .dmi_name("preset_selector")
+                    .show(ui);
+            if preset_update.changed() {
+                self.push_log(format!("[{}] 预设切换 → {}", preset_update.id, self.preset_name));
+            }
+        });
+        DMILabel::caption(
+            "多层编号示范：展开\"预设\"后，组登记为 父号.n，组内选项登记为 父号.n.m（三层号）。",
+        )
+        .show(ui);
     }
 
     /// 滑块区：浮点与整数各一个。 / Sliders section: one float and one integer.

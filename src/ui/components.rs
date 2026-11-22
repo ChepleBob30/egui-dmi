@@ -480,21 +480,25 @@ impl<'a> DMIRadio<'a> {
 // 下拉菜单 Select
 // ============================================================================
 
-/// 封装下拉菜单：绑定当前值与候选列表，选中即写回。
-/// Select wrapper: binds current value and options, writes back on pick.
+/// 封装下拉菜单：绑定当前值与候选列表，选中即写回；支持分组多层编号。
+/// Select wrapper: binds value and options; grouped mode adds grandchild ids.
 pub struct DMISelect<'a, Value: PartialEq + Clone + std::fmt::Display> {
     /// 菜单标识文本（兼作 id 盐）。 / Label acting as combo id salt.
     label: &'a str,
     /// 绑定当前值。 / Bound current value.
     current: &'a mut Value,
-    /// 候选项列表。 / Candidate options list.
+    /// 候选项列表（扁平模式）。 / Flat candidate options list.
     options: &'a [Value],
+    /// 分组列表（组名 + 组内选项），非空即分组模式。
+    /// Named groups of options; non-empty switches to grouped mode.
+    groups: &'a [(&'a str, &'a [Value])],
     /// 是否可交互。 / Whether interactive.
     enabled: bool,
     /// DMI 注册名称（命名不同则额外分配编号）。
     /// Explicit DMI name; a different name allocates its own id.
     dmi_name: Option<String>,
-    /// 子项单独编号开关。 / Issue dotted ids for each option.
+    /// 子项单独编号开关（扁平模式用；分组模式自动启用）。
+    /// Dotted ids for flat options; grouped mode implies it.
     individual_ids: bool,
 }
 
@@ -502,7 +506,25 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
     /// 构建下拉菜单并绑定当前值与候选项。
     /// Build a select bound to current value and options.
     pub fn new(label: &'a str, current: &'a mut Value, options: &'a [Value]) -> Self {
-        Self { label, current, options, enabled: true, dmi_name: None, individual_ids: false }
+        Self {
+            label,
+            current,
+            options,
+            groups: &[],
+            enabled: true,
+            dmi_name: None,
+            individual_ids: false,
+        }
+    }
+
+    /// 构建分组下拉菜单：组登记为子号（父号.n），组内选项登记为孙号（父号.n.m）。
+    /// Grouped select: groups get child ids, options get grandchild ids.
+    pub fn grouped(
+        label: &'a str,
+        current: &'a mut Value,
+        groups: &'a [(&'a str, &'a [Value])],
+    ) -> Self {
+        Self { options: &[], groups, ..Self::new(label, current, &[]) }
     }
 
     /// 设置是否可交互。 / Set interactivity.
@@ -535,15 +557,39 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         // 禁用态通过 add_enabled_ui 屏蔽整棵子 UI。
         // Disabled state blocks the whole child ui via add_enabled_ui.
         let mut picked: Option<Value> = None;
-        let mut drawn_options: Vec<(String, Id)> = Vec::new();
+        // 登记素材：组头（名称, egui id）与选项（所属组槽位, 文本, egui id）。
+        // Collected for registration: group headers and options with slot info.
+        let mut drawn_groups: Vec<(String, Id)> = Vec::new();
+        let mut drawn_options: Vec<(Option<usize>, String, Id)> = Vec::new();
         let outer = ui.add_enabled_ui(self.enabled, |ui| {
             combo.show_ui(ui, |ui| {
-                for option in self.options {
-                    let option_response =
-                        ui.selectable_label(option == self.current, option.to_string());
-                    drawn_options.push((option.to_string(), option_response.id));
-                    if option_response.clicked() {
-                        picked = Some(option.clone());
+                if self.groups.is_empty() {
+                    for option in self.options {
+                        let option_response =
+                            ui.selectable_label(option == self.current, option.to_string());
+                        drawn_options.push((None, option.to_string(), option_response.id));
+                        if option_response.clicked() {
+                            picked = Some(option.clone());
+                        }
+                    }
+                } else {
+                    for (group_index, (group_name, group_options)) in
+                        self.groups.iter().enumerate()
+                    {
+                        let header = ui.add(
+                            egui::Label::new(RichText::new(*group_name).weak().small())
+                                .selectable(false),
+                        );
+                        drawn_groups.push(((*group_name).to_owned(), header.id));
+                        for option in *group_options {
+                            let option_response =
+                                ui.selectable_label(option == self.current, option.to_string());
+                            drawn_options
+                                .push((Some(group_index), option.to_string(), option_response.id));
+                            if option_response.clicked() {
+                                picked = Some(option.clone());
+                            }
+                        }
                     }
                 }
                 picked.clone()
@@ -551,13 +597,24 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         });
         let inner = outer.inner;
         let dmi_id = id::allocate(inner.response.id, DMIWidgetKind::Select, self.dmi_name.as_deref(), None);
-        // 独立编号模式：为已绘制选项登记 父号.序号 子条目。
-        // Dotted mode: register parent.n records for drawn options.
-        if self.individual_ids {
+        // 分组模式自动启用小数编号：组领 父号.n，组内选项领 父号.n.m。
+        // Grouped mode implies dotted ids: groups parent.n, options parent.n.m.
+        if self.individual_ids || !self.groups.is_empty() {
             let base_name = id::name_of(dmi_id).unwrap_or_default();
-            for (option_text, option_egui_id) in drawn_options {
-                let child_name = format!("{base_name}_{}", sanitize_name(&option_text));
-                id::allocate_child(option_egui_id, DMIWidgetKind::Select, &child_name, dmi_id);
+            let mut group_entries: Vec<(String, DMIId)> = Vec::with_capacity(drawn_groups.len());
+            for (group_name, header_id) in &drawn_groups {
+                let child_name = format!("{base_name}_{}", sanitize_name(group_name));
+                let child_id =
+                    id::allocate_child(*header_id, DMIWidgetKind::Select, &child_name, dmi_id);
+                group_entries.push((child_name, child_id));
+            }
+            for (group_slot, option_text, option_id) in &drawn_options {
+                let (parent_name, parent_id) = match group_slot {
+                    Some(index) => (group_entries[*index].0.as_str(), group_entries[*index].1),
+                    None => (base_name.as_str(), dmi_id),
+                };
+                let child_name = format!("{parent_name}_{}", sanitize_name(option_text));
+                id::allocate_child(*option_id, DMIWidgetKind::Select, &child_name, parent_id);
             }
         }
         let chosen = inner.inner.flatten();
@@ -695,6 +752,28 @@ mod tests {
         assert_eq!(grown, 6, "300 帧只应新增本用例的 6 条命名控件（匿名标签不登记）");
     }
 
+    /// 分组下拉收起状态：仅父号入表，展开登记子/孙号由机制测试覆盖。
+    /// Closed grouped select registers only the parent id.
+    #[test]
+    fn grouped_select_closed_registers_parent_only() {
+        static PRESET: &[(&str, &[&str])] =
+            &[("画面", &["明亮", "柔和"]), ("声音", &["清澈", "厚重"])];
+        let mut chosen = "明亮";
+        for _frame in 0..2 {
+            egui::__run_test_ui(|ui| {
+                DesignLanguages::install(ui.ctx());
+                let _ = DMISelect::grouped("预设", &mut chosen, PRESET)
+                    .dmi_name("case_grouped_select")
+                    .show(ui);
+            });
+        }
+        let hits = id::list_id()
+            .iter()
+            .filter(|record| record.name.starts_with("case_grouped_select"))
+            .count();
+        assert_eq!(hits, 1, "未展开时只应有父号一条");
+    }
+
     /// 单选组重复渲染：1 父号 + 3 子号，不重号不增长。
     /// Radio group: one parent, three dotted children, stable across frames.
     #[test]
@@ -713,15 +792,15 @@ mod tests {
             .filter(|record| record.name.starts_with("case_group_radio"))
             .collect();
         assert_eq!(group_records.len(), 4, "应为 1 个父号 + 3 个子号");
-        let parent = group_records.iter().find(|record| record.id.minor == 0).unwrap();
+        let parent = group_records.iter().find(|record| record.id.is_root()).unwrap();
         assert_eq!(parent.name, "case_group_radio");
         let minors: Vec<u32> = group_records
             .iter()
-            .filter(|record| record.id.minor != 0)
-            .map(|record| record.id.minor)
+            .filter(|record| !record.id.is_root())
+            .map(|record| record.id.level(0))
             .collect();
         assert_eq!(minors, vec![1, 2, 3], "子号按出现顺序 父号.1/.2/.3");
-        for record in group_records.iter().filter(|record| record.id.minor != 0) {
+        for record in group_records.iter().filter(|record| !record.id.is_root()) {
             assert_eq!(record.parent, parent.id, "子号 parent 指向父号");
         }
     }

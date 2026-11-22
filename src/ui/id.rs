@@ -9,23 +9,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 // DMI 编号 DMI identifier
 // ============================================================================
 
-/// DMI 编号：major 整数部分，minor 子组件号（0 表示无小数位）。
-/// DMI identifier: major number; minor 0 means no dotted child part.
+/// 小数路径最大深度：支持 1.2.3.4 四级嵌套。
+/// Maximum dotted path depth, allowing four nested levels.
+pub const DMI_MAX_DEPTH: usize = 4;
+
+/// DMI 编号：主号 + 小数路径；depth 为 minors 的有效长度。
+/// DMI identifier: major plus dotted path; depth is the valid minors length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DMIId {
     /// 主编号（0 为系统保留）。 / Major number (0 reserved for system).
     pub major: u32,
-    /// 子组件小数位。 / Dotted child component part.
-    pub minor: u32,
+    /// 小数路径，仅前 depth 项有效。 / Dotted path, first depth entries valid.
+    pub minors: [u32; DMI_MAX_DEPTH],
+    /// 小数层数 0..=DMI_MAX_DEPTH。 / Number of dotted levels.
+    pub depth: u8,
 }
 
 impl DMIId {
     /// 系统保留 0 号，用于系统层面接口。 / Reserved id zero for system calls.
-    pub const SYSTEM: Self = Self { major: 0, minor: 0 };
+    pub const SYSTEM: Self = Self { major: 0, minors: [0; DMI_MAX_DEPTH], depth: 0 };
 
-    /// 由主编号构造。 / Build from the major number.
+    /// 由主编号构造（不带小数层）。 / Build from the major number.
     pub const fn new(major: u32) -> Self {
-        Self { major, minor: 0 }
+        Self { major, minors: [0; DMI_MAX_DEPTH], depth: 0 }
     }
 
     /// 是否为系统保留号。 / Whether this is the reserved system id.
@@ -33,9 +39,29 @@ impl DMIId {
         self.major == 0
     }
 
-    /// 构造父号下的子号（1.1、1.2…）。 / Build a child number under a parent.
-    pub const fn child(self, minor: u32) -> Self {
-        Self { major: self.major, minor }
+    /// 是否为不带小数的根号。 / Whether this id carries no dotted levels.
+    pub const fn is_root(self) -> bool {
+        self.depth == 0
+    }
+
+    /// 追加一级小数：1.2 追加 3 得 1.2.3；满深度返回 None。
+    /// Append one dotted level; None when the maximum depth is reached.
+    pub const fn child(self, minor: u32) -> Option<Self> {
+        if self.depth as usize >= DMI_MAX_DEPTH {
+            return None;
+        }
+        let mut path = self.minors;
+        path[self.depth as usize] = minor;
+        Some(Self { major: self.major, minors: path, depth: self.depth + 1 })
+    }
+
+    /// 第 index 层小数，越界返回 0。 / Dotted component at index, zero beyond depth.
+    pub const fn level(self, index: usize) -> u32 {
+        if index < self.depth as usize {
+            self.minors[index]
+        } else {
+            0
+        }
     }
 }
 
@@ -45,15 +71,15 @@ impl From<u32> for DMIId {
     }
 }
 
-/// 显示为 "1" 或 "1.2"，与 JSON target_id 直接对齐。
-/// Displays as "1"/"1.2", matching JSON target_id directly.
+/// 显示为 "1" / "1.2" / "1.2.3"，与 JSON target_id 字符串形态一致。
+/// Displays as "1"/"1.2"/"1.2.3", matching the target_id string form.
 impl std::fmt::Display for DMIId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.minor == 0 {
-            write!(formatter, "{}", self.major)
-        } else {
-            write!(formatter, "{}.{}", self.major, self.minor)
+        write!(formatter, "{}", self.major)?;
+        for index in 0..self.depth as usize {
+            write!(formatter, ".{}", self.minors[index])?;
         }
+        Ok(())
     }
 }
 
@@ -116,7 +142,10 @@ impl std::fmt::Display for DMIRecord {
         write!(
             formatter,
             "({}, \"{}\", {}, \"{}\")",
-            self.id, self.kind.as_str(), self.parent, self.name
+            self.id,
+            self.kind.as_str(),
+            self.parent,
+            self.name
         )
     }
 }
@@ -224,8 +253,18 @@ impl DMIRegistry {
         }
         let counter = self.minor_counters.entry(parent).or_insert(0);
         *counter += 1;
-        let new_id = parent.child(*counter);
-        self.push_record(DMIRecord { id: new_id, kind, parent, name: name.to_owned() });
+        // 深度上限防御：第 5 层请求显式拒绝，不发号、不入表。
+        // Depth guard: a fifth-level request is refused, nothing registered.
+        let Some(new_id) = parent.child(*counter) else {
+            debug_assert!(false, "DMI child id exceeds DMI_MAX_DEPTH");
+            return DMIId::SYSTEM;
+        };
+        self.push_record(DMIRecord {
+            id: new_id,
+            kind,
+            parent,
+            name: name.to_owned(),
+        });
         self.reused.insert(key, new_id);
         self.located.insert(new_id, egui_id);
         new_id
@@ -247,7 +286,9 @@ static REGISTRY: OnceLock<Mutex<DMIRegistry>> = OnceLock::new();
 /// Locks the registry; recovers data from a poisoned lock.
 fn with_registry<R>(action: impl FnOnce(&mut DMIRegistry) -> R) -> R {
     let registry = REGISTRY.get_or_init(Mutex::default);
-    let mut guard = registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     action(&mut guard)
 }
 
@@ -313,12 +354,32 @@ mod tests {
     #[test]
     fn named_identity_survives_egui_drift() {
         let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
-        let first = allocate(Id::NULL.with("drift_a"), DMIWidgetKind::Button, Some("case_drift_button"), None);
-        let drifted = allocate(Id::NULL.with("drift_b"), DMIWidgetKind::Button, Some("case_drift_button"), None);
+        let first = allocate(
+            Id::NULL.with("drift_a"),
+            DMIWidgetKind::Button,
+            Some("case_drift_button"),
+            None,
+        );
+        let drifted = allocate(
+            Id::NULL.with("drift_b"),
+            DMIWidgetKind::Button,
+            Some("case_drift_button"),
+            None,
+        );
         assert_eq!(first, drifted, "布局漂移后同名必须复用，不重复入表");
         let shared_egui_id = Id::NULL.with("drift_shared");
-        let red = allocate(shared_egui_id, DMIWidgetKind::Button, Some("case_names_red"), None);
-        let blue = allocate(shared_egui_id, DMIWidgetKind::Button, Some("case_names_blue"), None);
+        let red = allocate(
+            shared_egui_id,
+            DMIWidgetKind::Button,
+            Some("case_names_red"),
+            None,
+        );
+        let blue = allocate(
+            shared_egui_id,
+            DMIWidgetKind::Button,
+            Some("case_names_blue"),
+            None,
+        );
         assert_ne!(red, blue, "命名不同必须额外分配");
         assert_eq!(locate(blue), Some(shared_egui_id));
     }
@@ -336,7 +397,10 @@ mod tests {
                 None,
             );
         }
-        let hits = list_id().iter().filter(|record| record.name == "case_grow_probe").count();
+        let hits = list_id()
+            .iter()
+            .filter(|record| record.name == "case_grow_probe")
+            .count();
         assert_eq!(hits, 1, "同名重复分配不得重复入表");
     }
 
@@ -370,13 +434,169 @@ mod tests {
             parent,
         );
         assert_eq!(light, light_again, "子项按名称复用");
-        assert_eq!(light, parent.child(1));
-        assert_eq!(dark, parent.child(2));
+        assert_eq!(light, parent.child(1).unwrap());
+        assert_eq!(dark, parent.child(2).unwrap());
         assert_eq!(light.to_string(), format!("{}.1", parent.major));
         let records = list_id();
-        let child_record = records.iter().find(|record| record.id == dark).expect("子项条目存在");
+        let child_record = records
+            .iter()
+            .find(|record| record.id == dark)
+            .expect("子项条目存在");
         assert_eq!(child_record.parent, parent);
         assert_eq!(child_record.name, "case_theme_selector_dark");
+    }
+
+    /// 多级构造与显示：1.2.3 形态与各访问器边界。
+    /// Multi-level construction, display and accessor boundaries.
+    #[test]
+    fn multi_level_construction_and_display() {
+        let root = DMIId::new(1);
+        assert!(root.is_root() && !root.is_system());
+        let child = root.child(2).unwrap();
+        let grand = child.child(3).unwrap();
+        assert_eq!(child.to_string(), "1.2");
+        assert_eq!(grand.to_string(), "1.2.3");
+        assert_eq!(grand.level(0), 2);
+        assert_eq!(grand.level(1), 3);
+        assert_eq!(grand.level(2), 0, "越界层返回 0");
+        assert!(DMIId::SYSTEM.is_system());
+    }
+
+    /// 三层发号链：父 1 → 子 1.1 → 孙 1.1.1/1.1.2，parent 链与复用一致。
+    /// Three-level chain: parent, child, grandchildren with parent links.
+    #[test]
+    fn grandchild_chain_allocates_under_child() {
+        let parent = allocate(
+            Id::NULL.with("chain_root"),
+            DMIWidgetKind::Select,
+            Some("case_chain_root"),
+            None,
+        );
+        let child = allocate_child(
+            Id::NULL.with("chain_group"),
+            DMIWidgetKind::Select,
+            "case_chain_root_group",
+            parent,
+        );
+        let first = allocate_child(
+            Id::NULL.with("chain_item_a"),
+            DMIWidgetKind::Select,
+            "case_chain_root_group_a",
+            child,
+        );
+        let second = allocate_child(
+            Id::NULL.with("chain_item_b"),
+            DMIWidgetKind::Select,
+            "case_chain_root_group_b",
+            child,
+        );
+        let first_again = allocate_child(
+            Id::NULL.with("chain_item_a_moved"),
+            DMIWidgetKind::Select,
+            "case_chain_root_group_a",
+            child,
+        );
+        assert_eq!(child, parent.child(1).unwrap());
+        assert_eq!(first, child.child(1).unwrap(), "孙号 = 1.1.1");
+        assert_eq!(second, child.child(2).unwrap(), "孙号 = 1.1.2");
+        assert_eq!(first, first_again, "孙项按名称复用，egui id 漂移无关");
+        let records = list_id();
+        let first_record = records.iter().find(|record| record.id == first).unwrap();
+        assert_eq!(first_record.parent, child, "孙项 parent 指向子而非根");
+        let chain_count =
+            records.iter().filter(|record| record.name.starts_with("case_chain_root")).count();
+        assert_eq!(chain_count, 4, "1 父 + 1 子 + 2 孙，复用不增长");
+    }
+
+    /// 纯函数边界：满深度后 child() 返回 None，不依赖任何全局状态。
+    /// Pure boundary: child() yields None at maximum depth.
+    #[test]
+    fn child_at_max_depth_returns_none() {
+        let mut deep = DMIId::new(7);
+        for _level in 0..DMI_MAX_DEPTH {
+            deep = deep.child(1).unwrap();
+        }
+        assert_eq!(deep.depth as usize, DMI_MAX_DEPTH);
+        assert_eq!(deep.to_string(), "7.1.1.1.1");
+        assert!(deep.child(2).is_none(), "满深度必须拒绝追加");
+    }
+
+    /// debug 档：超限发号按蓝图约定 panic 提示（防御性边界）。
+    /// Debug builds panic on over-deep allocation, as the blueprint prescribes.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "exceeds DMI_MAX_DEPTH")]
+    fn depth_limit_panics_in_debug_build() {
+        let mut deep = allocate(
+            Id::NULL.with("deep_dbg_root"),
+            DMIWidgetKind::Select,
+            Some("case_deep_dbg_root"),
+            None,
+        );
+        for level in 1..=DMI_MAX_DEPTH {
+            let name = format!("case_deep_dbg_level_{level}");
+            deep = allocate_child(
+                Id::NULL.with(format!("deep_dbg_salt_{level}")),
+                DMIWidgetKind::Select,
+                &name,
+                deep,
+            );
+        }
+        allocate_child(
+            Id::NULL.with("deep_dbg_overflow"),
+            DMIWidgetKind::Select,
+            "case_deep_dbg_overflow",
+            deep,
+        );
+    }
+
+    /// release 档：超限发号返回 SYSTEM 哨兵且不入表。
+    /// Release builds refuse with SYSTEM and register nothing.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn depth_limit_rejects_without_registering() {
+        let mut deep = allocate(
+            Id::NULL.with("deep_root"),
+            DMIWidgetKind::Select,
+            Some("case_deep_root"),
+            None,
+        );
+        for level in 1..=DMI_MAX_DEPTH {
+            let name = format!("case_deep_level_{level}");
+            deep = allocate_child(
+                Id::NULL.with(format!("deep_salt_{level}")),
+                DMIWidgetKind::Select,
+                &name,
+                deep,
+            );
+        }
+        let before =
+            list_id().iter().filter(|record| record.name.starts_with("case_deep")).count();
+        let rejected = allocate_child(
+            Id::NULL.with("deep_overflow"),
+            DMIWidgetKind::Select,
+            "case_deep_overflow",
+            deep,
+        );
+        assert!(rejected.is_system(), "超限子号必须被拒绝");
+        let after =
+            list_id().iter().filter(|record| record.name.starts_with("case_deep")).count();
+        assert_eq!(before, after, "拒绝路径不得入表");
+    }
+
+    /// Ord 语义：按小数路径逐段数值比较，不受数组尾部填充影响。
+    /// Ordering compares path segment by segment, padding-insensitive.
+    #[test]
+    fn order_compares_path_segments() {
+        let one = DMIId::new(1);
+        let one_two = one.child(2).unwrap();
+        let one_two_three = one_two.child(3).unwrap();
+        let one_ten = one.child(10).unwrap();
+        assert!(one < one_two && one_two < one_two_three, "前缀小于扩展");
+        assert!(one_two < one_ten, "逐段数值比较，非字典序");
+        let mut seen = std::collections::HashSet::new();
+        assert!(seen.insert(one_two));
+        assert!(!seen.insert(DMIId::new(1).child(2).unwrap()), "等值编号哈希一致");
     }
 
     /// 版本号仅在真实入表时变化。 / Revision only moves on real pushes.
@@ -385,10 +605,20 @@ mod tests {
         let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
         let name = "case_revision_probe";
         let start = registry_revision();
-        let first = allocate(Id::NULL.with("rev_a"), DMIWidgetKind::Slider, Some(name), None);
+        let first = allocate(
+            Id::NULL.with("rev_a"),
+            DMIWidgetKind::Slider,
+            Some(name),
+            None,
+        );
         assert!(registry_revision() > start, "入表必须递增版本");
         let held = registry_revision();
-        let reused = allocate(Id::NULL.with("rev_b"), DMIWidgetKind::Slider, Some(name), None);
+        let reused = allocate(
+            Id::NULL.with("rev_b"),
+            DMIWidgetKind::Slider,
+            Some(name),
+            None,
+        );
         assert_eq!(first, reused);
         assert_eq!(held, registry_revision(), "复用不得递增版本");
     }

@@ -31,18 +31,22 @@ DMIRegistry
  └─ snapshot:      Arc<Vec<DMIRecord>>        共享只读快照，入表时重建
 ```
 
-### 2.1 `DMIId { major, minor }`
+### 2.1 `DMIId { major, minors, depth }`
 
-两级整数编号。`minor == 0` 表示纯整数号；`1.2` 即 `{major:1, minor:2}`。
+主号 + 小数路径编号，`DMI_MAX_DEPTH = 4` 层上限：`1`、`1.2`、`1.2.3.4` 均可表达，
+`depth` 是 `minors` 数组的有效长度。定长数组而非 `Vec`：`DMIId` 是 `minor_counters`
+与 `located` 的哈希键、每帧 `allocate` 热路径触碰，必须保持 `Copy + Hash + Ord` 零分配。
 
 | 方法 | 做什么 | 为什么这样设计 |
 | --- | --- | --- |
 | `DMIId::SYSTEM`（常量） | 系统保留 0 号 | dmi.md 规定 0 号留给系统层接口；作为 `parent` 缺省值还兼表"根组件"，省去 Option。 |
 | `DMIId::new(major)` | 由主号构造 | `const fn`，发号路径零运行时开销。 |
 | `is_system()` | 判断是否 0 号 | 调用方（如未登记的标签）需要一个"无编号"哨兵；用它而不是 `Option`，保持四元组 `parent` 字段类型统一。 |
-| `child(minor)` | 生成父号下子号 | 子号必须继承父 `major`（`1.1/1.2` 与父 `1` 同段），保证编号按组件聚簇、可读。 |
+| `is_root()` | 判断是否不带小数层 | 取代旧 `minor == 0` 判定；根号即主号本身。 |
+| `child(minor)` | 追加一层小数，返回 `Option` | 子号继承父 `major`，路径逐级追加（`1 → 1.1 → 1.1.1`）；满深度返回 `None`，深度是坐标不是身份，追加不改变已有前缀。 |
+| `level(index)` | 读取第 index 层小数 | 越界返回 0；供排序、命名拼接与序列化使用，避免外部直接触碰数组。 |
 | `From<u32>` | 主号隐式转换 | JSON/测试里写 `1` 即 `DMIId`，减少样板。 |
-| `Display` | 输出 `1` / `1.2` | 与 dmi.md 的 JSON `target_id` 字面完全一致，未来序列化零转换。 |
+| `Display` | 输出 `1` / `1.2` / `1.2.3` | 与 dmi.md 的 JSON `target_id` 字面完全一致；两级以上小数在 JSON 中须用字符串形态（`"1.1.1"`），因为 `1.1.1` 不是合法 JSON 数字。 |
 
 ### 2.2 `DMIWidgetKind` 与 `as_str()`
 
@@ -120,7 +124,10 @@ enum ReuseKey {
   因此同样对布局漂移免疫；弹出层开合、选项排序变化都不会重发子号；
 - **发号用 `minor_counters[parent] += 1`**：子号按"首次出现顺序"分配
   （`1.1, 1.2…`），与选项在列表中的序号解耦——已登记的旧选项命中复用，
-  永远不会因为插了新选项而全体挪号。
+  永远不会因为插了新选项而全体挪号；
+- **深度守卫**：`parent.child(counter)` 满 4 层返回 `None`，此时显式拒绝——
+  debug 档 `debug_assert` 提示，release 档返回 `SYSTEM` 哨兵且不入表。
+  宁可拒绝不截断；`minor_counters` 以任意 `DMIId` 为键，孙层发号天然成立。
 
 ### 3.4 `push_record()`——唯一允许列表增长的出口
 
@@ -172,6 +179,11 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
   `allocate_child`。`sanitize_name` 把选项文本压成小写字母数字下划线片段，
   对齐 dmi.md `theme_selector_light` 命名例。选项文本即名称 ⇒ 复用按文本恒定，
   与控件位置无关；
+- **`DMISelect::grouped(label, current, groups)`**：分组下拉，`groups` 为
+  `&[(组名, &[选项])]`。弹出层渲染时收集组头与选项的（文本, egui id），渲染后
+  按出现顺序登记：组领 `父号.n`（名称 `"{父名}_{组名}"`），组内选项领 `父号.n.m`
+  （名称 `"{父名}_{组名}_{选项名}"`）；分组模式自动启用小数编号，无需
+  `.individual_ids()`。登记全部走名称键，收起/展开/布局漂移都不重号；
 - **`DMIRadio::group(name)`**：单选框是 dmi.md 点名的"同时产生多个组件"的工具。
   组名首现时经 `allocate` 发一个统一整数父号（操作该号即寻址整组），每成员经
   `allocate_child` 领取小数子号，名称为 `"{组名}_{选项文本}"`；`DMIUpdate.id`
@@ -207,6 +219,11 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
 未来 DMI 调用  {"target_id": 1.2} → list_id 找名 → locate(1.2) 拿当前 egui id 操作真组件
 ```
 
+编号机制支持三层及更深（`1.1.1`，上限 4 层），命名法为"父全名 + '_' + 本项名"；
+第一个多层实例已由 `DMISelect::grouped`（demo"场景预设"）落地：
+组登记 `父号.n`、组内选项登记 `父号.n.m`（如 `5.1.2`），命名法即 §2.4 预留的
+"父全名 + '_' + 本项名"拼接式，`id.rs` 机制未因实例落地再改动。
+
 ## 7. 已知边界与演进路线
 
 | 边界 | 现状代价 | 触发重构的条件与方案 |
@@ -215,6 +232,7 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
 | 匿名交互控件漂移重号 | 位置键语义弱 | 约定交互控件必须 `dmi_name`（demo 全量遵守） |
 | `name_of` 线性扫 | 仅入表路径，非每帧 | 成为热点则加 `HashMap<String, DMIId>` 二级索引（即 reused 键反用） |
 | 条目不回收 | 只增不删 | 未来按帧号打 `last_seen`，做标记-清除式清扫 |
+| 嵌套深度上限 | 4 层（`1.2.3.4`），第 5 层显式拒绝 | debug panic 提示 / release 回 `SYSTEM` 不入表；容器组件层级需求超出时调大 `DMI_MAX_DEPTH` 即可 |
 
 ## 8. 测试对应关系
 

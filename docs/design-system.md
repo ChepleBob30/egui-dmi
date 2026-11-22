@@ -56,6 +56,7 @@ DMITextInput::new(&mut text).placeholder("搜索…").show(ui);
 DMICheckbox::new(&mut checked, "启用加速").show(ui);
 DMIRadio::new(is_selected, "选项 A").show(ui);
 DMISelect::new("模式", &mut current, &options).show(ui);
+DMISelect::grouped("预设", &mut current, PRESET_GROUPS).show(ui);  // 多层编号
 DMISlider::new(&mut volume, 0.0..=100.0).show(ui);
 ```
 
@@ -66,7 +67,8 @@ DMISlider::new(&mut volume, 0.0..=100.0).show(ui);
   源码中已用 `DMI标记` 注释声明：`src/dmi/` 数据通道落地后，DMIUpdate 将完全取代 Response。
 - 编号复用规则：键 =（egui id, DMI 名称）。同一 egui id 下**命名不同即额外分配新编号**；
   名称相同则跨帧复用。组件可用 `.dmi_name("theme_selector")` 显式命名（便于 DMI 分配 id），
-  `DMISelect` 还可用 `.individual_ids()` 让每个选项获得 `父名_选项名` 的 `父号.序号` 子条目。
+  `DMISelect` 还可用 `.individual_ids()` 让每个选项获得 `父名_选项名` 的 `父号.序号` 子条目；
+  `DMISelect::grouped` 分组下拉自动启用多层编号：组登记 `父号.n`，组内选项登记 `父号.n.m`。
   查询接口：`ui::id::list_id()` 输出全部 (id, 类型, 上级id, 名称) 条目。
 
 ## DMI 修改范围

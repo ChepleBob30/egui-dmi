@@ -43,6 +43,10 @@ egui-dmi/
 
 ## 变更记录说明
 
+- 2026-11-22：`DMISelect` 新增 `grouped` 分组下拉（组=父号.n，选项=父号.n.m），
+  demo"场景预设"落地首个三层编号实例；详见 changelog/2026-11-22-grouped-select-multilevel.md。
+- 2026-11-22：`DMIId` 升级为"主号+小数路径"（上限 4 层，`is_root/level/child→Option`），
+  `allocate_child` 增加深度守卫；编号机制支持子组件嵌套（A 方案，实例待容器组件落地）。
 - 2026-11-14：`DMIRadio` 新增 `.group()` 统一父号+小数子号（补 dmi.md 单选框编号规则）；
   demo 章节标题命名入表；详见 changelog/2026-11-14-demo-three-findings.md。
 - 2026-11-14：新增 `docs/id-system.md`（ID 分配系统与 reuse 机制说明文档）。
