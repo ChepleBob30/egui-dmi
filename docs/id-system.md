@@ -23,7 +23,7 @@ ID 分配系统解决一件事：**让大模型（DMI）有一个稳定、可读
 REGISTRY: OnceLock<Mutex<DMIRegistry>>        进程内唯一
 DMIRegistry
  ├─ records:       Vec<DMIRecord>             按分配顺序的条目表
- ├─ reused:        HashMap<ReuseKey, DMIId>   复用键 → 编号（reuse 机制的索引）
+ ├─ reused:        HashMap<String, DMIId>       名称 → 编号（唯一身份键，严格声明制）
  ├─ located:       HashMap<DMIId, Id>         编号 → 最近一次 egui id（定位通道）
  ├─ next_major:    u32                        主号发号器（从 1 起，0 已预留）
  ├─ minor_counters:HashMap<DMIId, u32>        父号 → 已发子号计数
@@ -56,37 +56,34 @@ DMIRegistry
 
 ### 2.3 `DMIRecord` 与 `Display`
 
-四元组 `(id, kind, parent, name)`，字段顺序即 dmi.md 文档顺序。`Display` 直接打印成
-`(1, "select", 0, "theme_selector")` —— 人类可读、模型可读、将来可被逐行解析，
-三者同一形态。
+五元组 `(id, kind, (parent, reach), name, function)`：`parent` 是
+`(上级编号, 从上级触及本组件的方式)` 元组，根组件为 `(0, Direct)`；`function` 是
+`功能名 → 触及列表` 的能力映射，注册期声明、首声明入表。`Display` 直接打印成
+`(1, "select", (0, Direct), "theme_selector", [("expand", [LeftClick, Hover])])`——
+人类可读、模型可读、将来可被逐行解析，三者同一形态。
 
 ## 3. reuse 机制（核心）
 
-### 3.1 `ReuseKey`：复用键 = 身份的定义
+### 3.1 复用键：名称即唯一身份
 
-```rust
-enum ReuseKey {
-    Named(String),     // 显式命名：名称即身份
-    Anonymous(Id),     // 匿名：egui id 位置键
-}
-```
+复用表只有一个 `HashMap<String, DMIId>`——**名称是唯一身份键**。这是两步收敛的结果：
 
-这是整个系统最重要的一次取舍。旧版复用键是 `(egui::Id, 名称)` 二元组，实测引发两类
-故障：
+1. 最早版键为 `(egui::Id, 名称)` 二元组，实测引发两类故障：**重复入表**
+   （egui 自动 id 由布局位置派生，状态一变位置漂移 ⇒ 同组件重发号）与
+   **自我增长反馈环**（注册表显示行本身是匿名组件也走登记 ⇒ 表变长 → 行变多 →
+   再登记，见 `build_docs/changelog/2026-11-14-performance-fix.md`）；
+2. 第一步收敛拆开"身份"与"定位"：显式命名只按名称、匿名按 egui id 位置键；
+   严格声明制（UI 触及方法改进裁决）完成第二步收敛：**匿名位置键删除**——
+   未声明名称与功能映射的组件一律不注册（`DMIUpdate.id` 即 `SYSTEM` 哨兵），
+   注册表只收录"有名有能"的组件。
 
-1. **重复入表**：egui 自动 id 由控件在 Ui 中的位置派生。状态一变（日志多一行、
-   下拉开合、文本增删导致宽度变化），控件 egui id 漂移 → 同一逻辑组件被当成新组件
-   → 重发号。面板每帧渲染又每帧登记，编号表单调膨胀。
-2. **自我增长反馈环**：注册表显示行本身是匿名组件、也走登记 → 表变长 → 显示行变多
-   → 再登记 → 循环放大（详见 `build_docs/changelog/2026-11-14-performance-fix.md`）。
-
-新设计把"身份"与"定位"拆开，正好对应 dmi.md 那句话：
+这正对应 dmi.md 那句话：
 > egui id 的意义是让 DMI 定位组件，而命名的意义是帮助 DMI 分配 id。
 
-- **显式命名 ⇒ 只按名称**。名称是调用方/模型给的逻辑身份，与渲染位置无关；
-  布局怎么漂，`case_theme_selector` 永远是同一个号。漂移被吸收进 `located` 定位表。
-- **匿名 ⇒ 按 egui id**。没名字就没有稳定身份可用，位置键是唯一选择；
-  接受"布局漂移可能重号"的弱语义，并在文档和 demo 规范中要求**交互控件必须命名**。
+- **名称即身份**：布局怎么漂，`case_theme_selector` 永远是同一个号，
+  漂移被吸收进 `located` 定位表；
+- **定位是快照**：`located` 在每次登记调用时刷新最新 egui id，供 Access 阶段
+  按号反查组件。
 
 哈希键里名称 `to_owned` 一次是每次 `allocate` 唯一的常态分配（O(名称长度)），
 换来命中路径完全不动条目表——实测帧成本可忽略，列表稳定性优先。
@@ -96,32 +93,36 @@ enum ReuseKey {
 私有 `DMIRegistry::allocate` 的步骤：
 
 ```text
-1. 组键：Some(name) → Named(name)；None → Anonymous(egui_id)
-2. reused.get(key) 命中？
-   是 → located.insert(既有id, 本帧egui_id)  → return 既有id      ← 不触碰 records/
+1. 严格校验：name 非空；function 非空；每个功能项名非空、触及列表非空、
+   列表不含 Direct、功能名不重复——任一不满足 → 返回 SYSTEM，不入表
+2. reused.get(name) 命中？
+   是 → located.insert(既有id, 本帧egui_id) → return 既有id        ← 不触碰 records/
                                                               revision/snapshot
    否 → major = next_major++
-      stored_name = 给定名 或 "{kind}-{major}"
-      push_record(...)（入表+版本+快照，见 3.4）
-      reused.insert(key, new_id); located.insert(new_id, egui_id)
+      push_record(...)（parent=(0,Direct)、function 拷入 owned 映射；
+                       入表+版本+快照，见 3.4）
+      reused.insert(name, new_id); located.insert(new_id, egui_id)
 ```
 
-公开壳 `pub fn allocate(egui_id, kind, name, parent)` 只负责加锁转发
+公开壳 `pub fn allocate(egui_id, kind, name, function)` 只负责加锁转发
 （见 §5）。三条设计理由：
 
 - **命中即返回**是 reuse 的硬要求：重复调用 = 刷新定位 + 返回旧号，
   列表零更新——"避免每一轮都重复更新列表"由这条不变式结构性保证；
-- **自动名 `"{kind}-{major}"`**：匿名组件也要在表里有可读行；号已在发号时确定，
-  名字里嵌号避免二次查表拼串；
-- **同 egui id + 不同名 ⇒ 两个号**天然成立：两个名字就是两个 `Named` 键，
+- **严格声明制**：没有自动名。功能映射是 DMI 操作组件的语义来源，
+  无名或无能的条目不可信，宁缺毋滥；
+- **同 egui id + 不同名 ⇒ 两个号**依然天然成立：两个名字就是两个键，
   互不遮挡。这正是"一个调色盘同时改文字色与背景色 → 拥有两个 id"的实现。
 
 ### 3.3 `allocate_child()`——子项的复用与发号
 
 与 `allocate` 同构，差异只有两点，各有理由：
 
-- **键固定为 `Named(name)`**：子项（下拉选项等）总在显式命名路径上（父名_选项名），
-  因此同样对布局漂移免疫；弹出层开合、选项排序变化都不会重发子号；
+- **键固定为名称**（`{父名}_{子名}`）：子项总在显式命名路径上，对布局漂移免疫；
+  弹出层开合、选项排序变化都不会重发子号；
+- **touch 与父号校验**：`touch` 不得为 `Direct`（那是根占位），父号必须已在表中
+  ——组件实现保证先父后子的登记顺序；子项功能映射由实现代码显式声明
+  （选项 `"pick"`、组成员 `"select"`、组头 `"hover"`），与调用方严格声明制同口径；
 - **发号用 `minor_counters[parent] += 1`**：子号按"首次出现顺序"分配
   （`1.1, 1.2…`），与选项在列表中的序号解耦——已登记的旧选项命中复用，
   永远不会因为插了新选项而全体挪号；
@@ -167,13 +168,19 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
 
 ## 4. 组件登记路径（components.rs）
 
-- **`.dmi_name(text)`**：全部七个组件统一的链式命名口。设计理由：名称是给
-  reuse 键喂的"身份"，必须让调用方可控；
-- **`show()` 末尾登记**：每个交互组件用自身交互产物的 `response.id` 作 `egui_id`
-  调 `allocate`，结果装进 `DMIUpdate.id`——返回值即编号，调用方无需第二次查表；
-- **`DMILabel` 的条件登记**：显式命名才登记（`Some(given) => allocate…`，
-  否则 `DMIId::SYSTEM`）。理由：标签是显示面，默认免登记直接掐死 §3.1 的反馈环；
-  需要 DMI 寻址的说明文本可以主动命名换取编号；
+- **`.dmi_name(text)`**：七个组件统一的链式命名口。名称给 reuse 键喂"身份"，
+  必须让调用方可控；功能映射不在组件层——组件不持有 `function` 字段，
+  该语义由 id 存储机制承载（`allocate`/`allocate_child` 的 `function` 参数与
+  `DMIRecord.function` 字段），供直接登记路径与后续 dmi 逻辑使用；
+- **`register()` 登记门（私有辅助）**：show() 尾部统一走
+  `register(egui_id, kind, &dmi_name)`——无名返回 `SYSTEM` 不注册，有名即注册
+  （功能映射传空，合法入表）。每个组件的 `show()` 因此只有一行登记代码，
+  未命名组件照常渲染但脱离 DMI 管理；
+- **`DMIUpdate.id` 即注册凭证**：`is_system()` 为真表示"该组件未注册"，
+  调用方可据此自检声明完整性；返回值即编号，无需第二次查表；
+- **标签的登记**：与其他组件同门同规（名称 + 功能映射双全才入表）。
+  demo 中章节标题显式声明 `("hover", [Hover])` 入表，日志/注册表显示行保持匿名
+  不注册——§3.1 反馈环闸口在严格声明制下依然成立；
 - **`DMISelect::individual_ids()` + `sanitize_name()`**：开启后对弹出层本轮渲染过的
   每个选项，以其 `option_response.id` 与 `"{父名}_{清洗后的选项文本}"` 调
   `allocate_child`。`sanitize_name` 把选项文本压成小写字母数字下划线片段，
@@ -207,12 +214,13 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
 ## 6. 完整流程实例（demo 外观下拉）
 
 ```text
-第 1 帧  DMISelect("theme_selector").individual_ids() 渲染，弹出层关闭
-         show → allocate(egui_id=X, Select, "theme_selector") → 未命中 → 发号 1
-         （表: (1,"select",0,"theme_selector")  revision:1）
+第 1 帧  DMISelect.dmi_name("theme_selector").individual_ids()，弹出层关闭
+         show → register → allocate(X, Select, "theme_selector", [])
+         → 未命中 → 发号 1
+         （表: (1,"select",(0,Direct),"theme_selector",[])  revision:1）
 用户点开下拉，第 2 帧 弹出层渲染 "浅色"/"深色"
-         allocate_child(egui_id=A, "theme_selector_浅色", 1) → 未命中 → 1.1
-         allocate_child(egui_id=B, "theme_selector_深色", 1) → 未命中 → 1.2
+         allocate_child(A, "theme_selector_浅色", 1, LeftClick, []) → 未命中 → 1.1
+         allocate_child(B, "theme_selector_深色", 1, LeftClick, []) → 未命中 → 1.2
          （revision:3；面板检出变化 → 重建三行缓存）
 第 3..n 帧 反复渲染/滚动/主题切换，egui id 漂移
          三个键全部命中 reused → 表零增长、版本不变 → 面板连快照都不读
@@ -230,7 +238,7 @@ O(records) 线性扫——只在入表新子号前调用一次，非每帧路径
 | 边界 | 现状代价 | 触发重构的条件与方案 |
 | --- | --- | --- |
 | 快照重建 O(n) | 每次入表克隆全表 | 条目 > 数千：改分块 Arc 链表或持久化向量 |
-| 匿名交互控件漂移重号 | 位置键语义弱 | 约定交互控件必须 `dmi_name`（demo 全量遵守） |
+| 未注册组件脱离 DMI 管理 | 无名 ⇒ id=SYSTEM 不可操作 | Access 接入检查表逐一核对 dmi_name（demo 已全量遵守）；功能映射经 id 层直接登记补录 |
 | `name_of` 线性扫 | 仅入表路径，非每帧 | 成为热点则加 `HashMap<String, DMIId>` 二级索引（即 reused 键反用） |
 | 条目不回收 | 只增不删 | 未来按帧号打 `last_seen`，做标记-清除式清扫 |
 | 嵌套深度上限 | 4 层（`1.2.3.4`），第 5 层显式拒绝 | debug panic 提示 / release 回 `SYSTEM` 不入表；容器组件层级需求超出时调大 `DMI_MAX_DEPTH` 即可 |

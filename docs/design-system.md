@@ -46,7 +46,14 @@ egui_dmi::ui::DesignLanguages::install(&ctx);
 
 ## 组件
 
-统一模式：**构建方法 → 链式修饰 → `show(ui) -> DMIUpdate`**。
+统一模式：**构建方法 → 链式修饰（含 `dmi_name` 登记名）→ `show(ui) -> DMIUpdate`**。
+声明了名称的组件才注册编号，未声明即 `DMIUpdate.id == SYSTEM`（可判定"未注册"）；
+功能映射（`UIEntry` 触及方式组成的 `function`）由 id 存储机制承载，
+组件层不持有该字段：
+
+```rust
+DMIButton::primary("保存设置").dmi_name("save_button").show(ui);
+```
 
 ```rust
 DMIButton::primary("hello world").show(ui);
@@ -62,6 +69,8 @@ DMISlider::new(&mut volume, 0.0..=100.0).show(ui);
 
 - `DMIButton` 自绘四态（禁用 > 按下 > 悬停 > 常态），其余组件委托 egui 原生控件、
   由安装后的全局样式统一着色。
+- 注册表条目为五元组 `(id, 类型, (上级id, 触及方式), 名称, [功能映射])`，
+  `list_id()` 快照直接可读（详见 `docs/id-system.md`）；
 - `DMIUpdate` 是纯数据记录 `{ id, clicked, changed }`（`Copy + PartialEq`）：
   `egui::Response` 已在组件出口处消化完毕、不再外泄；`id` 即组件在注册表中的编号
   （如 `3`、`5.2`、`6.1.2`，0 号系统保留），也是未来 JSON 调用的 `target_id`。

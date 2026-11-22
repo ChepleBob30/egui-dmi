@@ -1,6 +1,7 @@
 //! 组件ID注册表：DMI 编号分配、定位映射与修订快照（零帧重复入表）。
 //! Id registry: DMI numbering, locating map, revision-stamped snapshots.
 
+use crate::ui::UIEntry;
 use egui::Id;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -122,31 +123,40 @@ impl DMIWidgetKind {
     }
 }
 
-/// 注册表条目：(id, 类型, 上级id, 名称) 四元组。
-/// Registry record: the (id, kind, parent_id, name) tuple.
+/// 注册表条目：(id, 类型, (上级id, 触及方式), 名称, 功能映射)。
+/// Registry record: id, kind, (parent, reach-entry), name, capability map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DMIRecord {
     /// 本组件 DMI 编号。 / This component's DMI id.
     pub id: DMIId,
     /// 组件类型。 / Component kind.
     pub kind: DMIWidgetKind,
-    /// 上级组件编号（根组件为 0）。 / Parent id (system zero for roots).
-    pub parent: DMIId,
-    /// 组件名称（DMI 可读名，自动或显式）。 / Component name, explicit or auto.
+    /// (上级编号, 从上级触及本组件的方式)；根组件为 (0, Direct)。
+    /// Parent id plus the entry reaching this child; (zero, Direct) for roots.
+    pub parent: (DMIId, UIEntry),
+    /// 组件名称（注册强制显式声明，无自动名）。 / Explicit name; no auto names.
     pub name: String,
+    /// 功能映射：功能名 → 实现它的触及方式列表（首声明入表）。
+    /// Capability map: name to realizing entries, stored at first declaration.
+    pub function: Vec<(String, Vec<UIEntry>)>,
 }
 
-/// 显示为文档示例的四元组形式。 / Displays as the documented tuple form.
+/// 显示为文档五元组形式（功能映射内联）。
+/// Displays as the documented five-tuple with the capability map inlined.
 impl std::fmt::Display for DMIRecord {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "({}, \"{}\", {}, \"{}\")",
-            self.id,
-            self.kind.as_str(),
-            self.parent,
-            self.name
-        )
+            "({}, \"{}\", ({}, {:?}), \"{}\", [",
+            self.id, self.kind.as_str(), self.parent.0, self.parent.1, self.name
+        )?;
+        for (index, (capability, entries)) in self.function.iter().enumerate() {
+            if index > 0 {
+                write!(formatter, ", ")?;
+            }
+            write!(formatter, "(\"{}\", {:?})", capability, entries)?;
+        }
+        write!(formatter, "])")
     }
 }
 
@@ -154,23 +164,14 @@ impl std::fmt::Display for DMIRecord {
 // 持久注册表 Persistent registry
 // ============================================================================
 
-/// 复用键：显式命名只按名称，匿名按 egui id 位置键。
-/// Reuse key: named entries key on name only, anonymous on egui id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum ReuseKey {
-    /// 显式名称（与 egui id 无关，布局漂移不再重号）。 / Explicit name, drift-proof.
-    Named(String),
-    /// 匿名组件的 egui id 键。 / Positional egui id key for anonymous widgets.
-    Anonymous(Id),
-}
-
 /// 进程内持久注册表：条目、复用映射、定位表与修订快照。
 /// Process-lifetime registry: records, reuse map, locating, revision snapshot.
 struct DMIRegistry {
     /// 全部条目，按分配顺序。 / All records in allocation order.
     records: Vec<DMIRecord>,
-    /// 复用键 → DMI 编号。 / Reuse key to DMI id map.
-    reused: HashMap<ReuseKey, DMIId>,
+    /// 名称 → DMI 编号（名称是唯一身份键，严格声明制）。
+    /// Name to DMI id; the name is the only identity key.
+    reused: HashMap<String, DMIId>,
     /// DMI 编号 → 最近一次调用的 egui id（定位通道，每帧更新但不入表）。
     /// DMI id to last seen egui id; refreshed per call without table growth.
     located: HashMap<DMIId, Id>,
@@ -199,6 +200,22 @@ impl Default for DMIRegistry {
     }
 }
 
+/// 严格校验功能映射：空映射放行（组件登记路径）；非空时每项名非空、
+/// 列表非空、不含 Direct、功能名不重复。
+/// Empty maps pass; non-empty maps are validated item by item, strictly.
+fn valid_function(function: &[(&str, &[UIEntry])]) -> bool {
+    if function.is_empty() {
+        return true;
+    }
+    let mut seen = std::collections::HashSet::new();
+    function.iter().all(|(name, entries)| {
+        !name.is_empty()
+            && !entries.is_empty()
+            && !entries.contains(&UIEntry::Direct)
+            && seen.insert(*name)
+    })
+}
+
 impl DMIRegistry {
     /// 登记或复用主编号；命中只刷新定位，绝不触碰条目列表。
     /// Register or reuse; hits only refresh locating, never the table.
@@ -206,33 +223,32 @@ impl DMIRegistry {
         &mut self,
         egui_id: Id,
         kind: DMIWidgetKind,
-        name: Option<&str>,
-        parent: Option<DMIId>,
+        name: &str,
+        function: &[(&str, &[UIEntry])],
     ) -> DMIId {
-        // 显式命名：名称即身份；匿名：egui id 位置键。
-        // Named: name is identity; anonymous: positional egui id.
-        let key = match name {
-            Some(given) => ReuseKey::Named(given.to_owned()),
-            None => ReuseKey::Anonymous(egui_id),
-        };
-        if let Some(existing) = self.reused.get(&key) {
+        // 严格声明制：名称与功能映射缺一即拒绝，返回 SYSTEM 不入表。
+        // Strict gate: missing name or function map is refused outright.
+        if name.is_empty() || !valid_function(function) {
+            return DMIId::SYSTEM;
+        }
+        if let Some(existing) = self.reused.get(name) {
             self.located.insert(*existing, egui_id);
             return *existing;
         }
         let major = self.next_major;
         self.next_major += 1;
         let new_id = DMIId::new(major);
-        let stored_name = match name {
-            Some(given) => given.to_owned(),
-            None => format!("{}-{major}", kind.as_str()),
-        };
         self.push_record(DMIRecord {
             id: new_id,
             kind,
-            parent: parent.unwrap_or(DMIId::SYSTEM),
-            name: stored_name,
+            parent: (DMIId::SYSTEM, UIEntry::Direct),
+            name: name.to_owned(),
+            function: function
+                .iter()
+                .map(|(cap_name, entries)| (cap_name.to_string(), entries.to_vec()))
+                .collect(),
         });
-        self.reused.insert(key, new_id);
+        self.reused.insert(name.to_owned(), new_id);
         self.located.insert(new_id, egui_id);
         new_id
     }
@@ -245,9 +261,18 @@ impl DMIRegistry {
         kind: DMIWidgetKind,
         name: &str,
         parent: DMIId,
+        touch: UIEntry,
+        function: &[(&str, &[UIEntry])],
     ) -> DMIId {
-        let key = ReuseKey::Named(name.to_owned());
-        if let Some(existing) = self.reused.get(&key) {
+        // 子项同样受严格声明制约束；touch 为 Direct 或父号未登记均拒绝。
+        // Children share the strict gate; Direct touch or unknown parent fails.
+        if name.is_empty() || touch == UIEntry::Direct || !valid_function(function) {
+            return DMIId::SYSTEM;
+        }
+        if !self.records.iter().any(|record| record.id == parent) {
+            return DMIId::SYSTEM;
+        }
+        if let Some(existing) = self.reused.get(name) {
             self.located.insert(*existing, egui_id);
             return *existing;
         }
@@ -262,10 +287,14 @@ impl DMIRegistry {
         self.push_record(DMIRecord {
             id: new_id,
             kind,
-            parent,
+            parent: (parent, touch),
             name: name.to_owned(),
+            function: function
+                .iter()
+                .map(|(cap_name, entries)| (cap_name.to_string(), entries.to_vec()))
+                .collect(),
         });
-        self.reused.insert(key, new_id);
+        self.reused.insert(name.to_owned(), new_id);
         self.located.insert(new_id, egui_id);
         new_id
     }
@@ -292,21 +321,28 @@ fn with_registry<R>(action: impl FnOnce(&mut DMIRegistry) -> R) -> R {
     action(&mut guard)
 }
 
-/// 登记并取回 DMI 编号：显式命名只按名称复用，布局漂移不重号。
-/// Registers a widget; explicit names are identity, layout drift is harmless.
+/// 登记根组件：名称必填；功能映射可空，非空时逐项严格校验。
+/// Registers a root widget; name required, function map validated if given.
 pub fn allocate(
     egui_id: Id,
     kind: DMIWidgetKind,
-    name: Option<&str>,
-    parent: Option<DMIId>,
+    name: &str,
+    function: &[(&str, &[UIEntry])],
 ) -> DMIId {
-    with_registry(|registry| registry.allocate(egui_id, kind, name, parent))
+    with_registry(|registry| registry.allocate(egui_id, kind, name, function))
 }
 
-/// 为复合组件子项分配"父号.序号"，名称需完整（含父名前缀）。
-/// Allocates a "parent.n" child id; name carries the full prefixed label.
-pub fn allocate_child(egui_id: Id, kind: DMIWidgetKind, name: &str, parent: DMIId) -> DMIId {
-    with_registry(|registry| registry.allocate_child(egui_id, kind, name, parent))
+/// 登记子组件：touch 为从父触及子的方式；父号必须已登记；校验口径同根登记。
+/// Registers a child with its parent-reach entry; unknown parent is refused.
+pub fn allocate_child(
+    egui_id: Id,
+    kind: DMIWidgetKind,
+    name: &str,
+    parent: DMIId,
+    touch: UIEntry,
+    function: &[(&str, &[UIEntry])],
+) -> DMIId {
+    with_registry(|registry| registry.allocate_child(egui_id, kind, name, parent, touch, function))
 }
 
 /// 按编号查询组件名称。 / Queries the component name by DMI id.
@@ -349,101 +385,157 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// 测试通用功能声明。 / Shared single-capability declaration for tests.
+    const CAP: [(&str, &[UIEntry]); 1] = [("press", &[UIEntry::LeftClick])];
+    /// 双功能声明，用于往返与显示断言。 / Two-capability map for roundtrip checks.
+    const TWO_CAPS: [(&str, &[UIEntry]); 2] =
+        [("save", &[UIEntry::LeftClick]), ("hover", &[UIEntry::Hover])];
+
     /// 同 egui id 不同命名 ⇒ 两个编号；命名相同 ⇒ 跨漂移复用不重号。
     /// Different names get ids; same name reuses even with drifting egui id.
     #[test]
     fn named_identity_survives_egui_drift() {
-        let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
-        let first = allocate(
-            Id::NULL.with("drift_a"),
-            DMIWidgetKind::Button,
-            Some("case_drift_button"),
-            None,
-        );
-        let drifted = allocate(
-            Id::NULL.with("drift_b"),
-            DMIWidgetKind::Button,
-            Some("case_drift_button"),
-            None,
-        );
+        let first = allocate(Id::NULL.with("drift_a"), DMIWidgetKind::Button, "case_drift_button", &CAP);
+        let drifted = allocate(Id::NULL.with("drift_b"), DMIWidgetKind::Button, "case_drift_button", &CAP);
         assert_eq!(first, drifted, "布局漂移后同名必须复用，不重复入表");
+        assert!(!first.is_system());
         let shared_egui_id = Id::NULL.with("drift_shared");
-        let red = allocate(
-            shared_egui_id,
-            DMIWidgetKind::Button,
-            Some("case_names_red"),
-            None,
-        );
-        let blue = allocate(
-            shared_egui_id,
-            DMIWidgetKind::Button,
-            Some("case_names_blue"),
-            None,
-        );
+        let red = allocate(shared_egui_id, DMIWidgetKind::Button, "case_names_red", &CAP);
+        let blue = allocate(shared_egui_id, DMIWidgetKind::Button, "case_names_blue", &CAP);
         assert_ne!(red, blue, "命名不同必须额外分配");
         assert_eq!(locate(blue), Some(shared_egui_id));
     }
 
-    /// 反复登记不得使列表增长：同名 10 次只产生 1 条。
-    /// Repeated registration must not grow the list; ten calls, one record.
+    /// 同名 10 次登记（含漂移 egui id）只产生 1 条。
+    /// Ten same-name allocations produce exactly one record.
     #[test]
     fn repeated_allocation_does_not_grow() {
-        let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = test_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         for round in 0..10 {
             allocate(
                 Id::NULL.with(("grow_probe", round)),
                 DMIWidgetKind::Checkbox,
-                Some("case_grow_probe"),
-                None,
+                "case_grow_probe",
+                &CAP,
             );
         }
-        let hits = list_id()
-            .iter()
-            .filter(|record| record.name == "case_grow_probe")
-            .count();
+        let hits = list_id().iter().filter(|record| record.name == "case_grow_probe").count();
         assert_eq!(hits, 1, "同名重复分配不得重复入表");
     }
 
-    /// 子项编号形如 父号.1/父号.2，parent 指向父组件。
-    /// Children get dotted ids parent.1/parent.2 with parent link set.
+    /// 子项编号形如 父号.1/父号.2，parent 元组带触及方式。
+    /// Children get dotted ids with the reach entry stored in parent tuple.
     #[test]
     fn child_ids_follow_parent() {
-        let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
         let parent = allocate(
             Id::NULL.with("case_parent"),
             DMIWidgetKind::Select,
-            Some("case_theme_selector"),
-            None,
+            "case_theme_selector",
+            &CAP,
         );
         let light = allocate_child(
             Id::NULL.with("case_option_light"),
             DMIWidgetKind::Select,
             "case_theme_selector_light",
             parent,
+            UIEntry::LeftClick,
+            &CAP,
         );
         let dark = allocate_child(
             Id::NULL.with("case_option_dark"),
             DMIWidgetKind::Select,
             "case_theme_selector_dark",
             parent,
+            UIEntry::LeftClick,
+            &CAP,
         );
         let light_again = allocate_child(
             Id::NULL.with("case_option_light"),
             DMIWidgetKind::Select,
             "case_theme_selector_light",
             parent,
+            UIEntry::LeftClick,
+            &CAP,
         );
         assert_eq!(light, light_again, "子项按名称复用");
         assert_eq!(light, parent.child(1).unwrap());
         assert_eq!(dark, parent.child(2).unwrap());
-        assert_eq!(light.to_string(), format!("{}.1", parent.major));
         let records = list_id();
-        let child_record = records
-            .iter()
-            .find(|record| record.id == dark)
-            .expect("子项条目存在");
-        assert_eq!(child_record.parent, parent);
+        let child_record = records.iter().find(|record| record.id == dark).expect("子项条目存在");
+        assert_eq!(child_record.parent, (parent, UIEntry::LeftClick));
         assert_eq!(child_record.name, "case_theme_selector_dark");
+    }
+
+    /// 严格校验矩阵：六种非法声明一律拒绝，表与版本不动。
+    /// Strict rejection: six invalid declarations refused without growth.
+    #[test]
+    fn strict_rejection_matrix() {
+        let _guard = test_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = list_id().len();
+        let revision_before = registry_revision();
+        assert!(allocate(Id::NULL.with("rej_empty_name"), DMIWidgetKind::Button, "", &CAP).is_system());
+        assert!(allocate(
+            Id::NULL.with("rej_empty_entries"),
+            DMIWidgetKind::Button,
+            "case_rej_entries",
+            &[("go", &[] as &[UIEntry])]
+        )
+        .is_system());
+        assert!(allocate(
+            Id::NULL.with("rej_direct_entry"),
+            DMIWidgetKind::Button,
+            "case_rej_direct",
+            &[("go", &[UIEntry::Direct])]
+        )
+        .is_system());
+        assert!(allocate(
+            Id::NULL.with("rej_dup_cap"),
+            DMIWidgetKind::Button,
+            "case_rej_dup",
+            &[("go", &[UIEntry::LeftClick]), ("go", &[UIEntry::Hover])]
+        )
+        .is_system());
+        assert!(allocate_child(
+            Id::NULL.with("rej_orphan"),
+            DMIWidgetKind::Select,
+            "case_rej_orphan",
+            DMIId::new(999_999),
+            UIEntry::LeftClick,
+            &CAP
+        )
+        .is_system());
+        assert_eq!(list_id().len(), before, "拒绝路径不得入表");
+        assert_eq!(registry_revision(), revision_before, "拒绝路径不得动版本");
+        // 空功能映射是组件登记的合法形态：有名即注册。
+        // An empty function map is the normal component registration form.
+        let bare = allocate(
+            Id::NULL.with("rej_bare_ok"),
+            DMIWidgetKind::Button,
+            "case_rej_bare_ok",
+            &[],
+        );
+        assert!(!bare.is_system(), "空映射应正常注册");
+        assert_eq!(list_id().len(), before + 1, "空映射注册恰好新增一条");
+    }
+
+    /// 功能映射往返：入表内容与声明逐项相等，Display 内联功能表。
+    /// Capability map roundtrip with the inlined display form.
+    #[test]
+    fn function_roundtrip_and_display() {
+        let probe_id = allocate(
+            Id::NULL.with("cap_roundtrip"),
+            DMIWidgetKind::Button,
+            "case_cap_roundtrip",
+            &TWO_CAPS,
+        );
+        let records = list_id();
+        let record = records.iter().find(|record| record.id == probe_id).unwrap().clone();
+        assert_eq!(record.function.len(), 2);
+        assert_eq!(record.function[0].0, "save");
+        assert_eq!(record.function[1].1, vec![UIEntry::Hover]);
+        assert_eq!(record.parent, (DMIId::SYSTEM, UIEntry::Direct));
+        let text = record.to_string();
+        assert!(text.contains(r#"("save", [LeftClick])"#), "{text}");
     }
 
     /// 多级构造与显示：1.2.3 形态与各访问器边界。
@@ -469,32 +561,40 @@ mod tests {
         let parent = allocate(
             Id::NULL.with("chain_root"),
             DMIWidgetKind::Select,
-            Some("case_chain_root"),
-            None,
+            "case_chain_root",
+            &CAP,
         );
         let child = allocate_child(
             Id::NULL.with("chain_group"),
             DMIWidgetKind::Select,
             "case_chain_root_group",
             parent,
+            UIEntry::LeftClick,
+            &CAP,
         );
         let first = allocate_child(
             Id::NULL.with("chain_item_a"),
             DMIWidgetKind::Select,
             "case_chain_root_group_a",
             child,
+            UIEntry::LeftClick,
+            &CAP,
         );
         let second = allocate_child(
             Id::NULL.with("chain_item_b"),
             DMIWidgetKind::Select,
             "case_chain_root_group_b",
             child,
+            UIEntry::LeftClick,
+            &CAP,
         );
         let first_again = allocate_child(
             Id::NULL.with("chain_item_a_moved"),
             DMIWidgetKind::Select,
             "case_chain_root_group_a",
             child,
+            UIEntry::LeftClick,
+            &CAP,
         );
         assert_eq!(child, parent.child(1).unwrap());
         assert_eq!(first, child.child(1).unwrap(), "孙号 = 1.1.1");
@@ -502,7 +602,7 @@ mod tests {
         assert_eq!(first, first_again, "孙项按名称复用，egui id 漂移无关");
         let records = list_id();
         let first_record = records.iter().find(|record| record.id == first).unwrap();
-        assert_eq!(first_record.parent, child, "孙项 parent 指向子而非根");
+        assert_eq!(first_record.parent, (child, UIEntry::LeftClick), "孙项 parent 指向子");
         let chain_count =
             records.iter().filter(|record| record.name.starts_with("case_chain_root")).count();
         assert_eq!(chain_count, 4, "1 父 + 1 子 + 2 孙，复用不增长");
@@ -530,8 +630,8 @@ mod tests {
         let mut deep = allocate(
             Id::NULL.with("deep_dbg_root"),
             DMIWidgetKind::Select,
-            Some("case_deep_dbg_root"),
-            None,
+            "case_deep_dbg_root",
+            &CAP,
         );
         for level in 1..=DMI_MAX_DEPTH {
             let name = format!("case_deep_dbg_level_{level}");
@@ -540,6 +640,8 @@ mod tests {
                 DMIWidgetKind::Select,
                 &name,
                 deep,
+                UIEntry::LeftClick,
+                &CAP,
             );
         }
         allocate_child(
@@ -547,6 +649,8 @@ mod tests {
             DMIWidgetKind::Select,
             "case_deep_dbg_overflow",
             deep,
+            UIEntry::LeftClick,
+            &CAP,
         );
     }
 
@@ -558,8 +662,8 @@ mod tests {
         let mut deep = allocate(
             Id::NULL.with("deep_root"),
             DMIWidgetKind::Select,
-            Some("case_deep_root"),
-            None,
+            "case_deep_root",
+            &CAP,
         );
         for level in 1..=DMI_MAX_DEPTH {
             let name = format!("case_deep_level_{level}");
@@ -568,6 +672,8 @@ mod tests {
                 DMIWidgetKind::Select,
                 &name,
                 deep,
+                UIEntry::LeftClick,
+                &CAP,
             );
         }
         let before =
@@ -577,6 +683,8 @@ mod tests {
             DMIWidgetKind::Select,
             "case_deep_overflow",
             deep,
+            UIEntry::LeftClick,
+            &CAP,
         );
         assert!(rejected.is_system(), "超限子号必须被拒绝");
         let after =
@@ -602,23 +710,13 @@ mod tests {
     /// 版本号仅在真实入表时变化。 / Revision only moves on real pushes.
     #[test]
     fn revision_tracks_growth() {
-        let _guard = test_mutex().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = test_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let name = "case_revision_probe";
         let start = registry_revision();
-        let first = allocate(
-            Id::NULL.with("rev_a"),
-            DMIWidgetKind::Slider,
-            Some(name),
-            None,
-        );
+        let first = allocate(Id::NULL.with("rev_a"), DMIWidgetKind::Slider, name, &CAP);
         assert!(registry_revision() > start, "入表必须递增版本");
         let held = registry_revision();
-        let reused = allocate(
-            Id::NULL.with("rev_b"),
-            DMIWidgetKind::Slider,
-            Some(name),
-            None,
-        );
+        let reused = allocate(Id::NULL.with("rev_b"), DMIWidgetKind::Slider, name, &CAP);
         assert_eq!(first, reused);
         assert_eq!(held, registry_revision(), "复用不得递增版本");
     }

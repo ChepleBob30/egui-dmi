@@ -13,15 +13,15 @@ egui-dmi/
 ├── Cargo.toml                     # 包清单：库名 egui_dmi，edition 2024，workspace 含 demo；依赖 egui 0.37、serde_json。
 ├── src/
 │   ├── lib.rs                     # 项目简介与模块挂载入口。
-│   ├── ui.rs                      # UI 模块根：导出 design 与 components 两层公共 API。
+│   ├── ui.rs                      # UI 模块根：UIEntry 触及方式枚举 + design/components/id 公共 API 出口。
 │   ├── ui/
-│   │   ├── id.rs                  # 组件ID注册表：DMIId 主号+小数路径（4层上限，0号系统保留）、
-│   │   │                          #   名称/位置双键复用映射、allocate/allocate_child 发号、list_id() Arc 快照。
+│   │   ├── id.rs                  # 组件ID注册表：DMIId 主号+小数路径（4层上限）、名称唯一键、function 仅此层承载、
+│   │   │                          #   DMIRecord 五元组（parent 元组 + function 功能映射）、list_id() Arc 快照。
 │   │   ├── design.rs              # 设计语言（单文件）：
 │   │   │                          #   ColorLanguages 深/浅调色板 + hover/press/disabled/选中混色规则；
 │   │   │                          #   SpacingTokens 内边距/圆角/控件尺寸令牌；
 │   │   │                          #   DesignLanguages 聚合 + apply/install 写入 egui 全局样式（深浅两套）。
-│   │   └── components.rs          # DMI 组件（单文件）：七组件均带 dmi_name 登记出口；
+│   │   └── components.rs          # DMI 组件（单文件）：七组件以 dmi_name 过登记门（无名不注册），不持有 function；
 │   │                              #   DMIUpdate 为纯数据 {id, clicked, changed}（Response 不出 show）；
 │   │                              #   DMIButton(primary/destructive/text…)自绘四态着色；
 │   │                              #   DMISelect 扁平 individual_ids 子号 / grouped 分组三层号；
@@ -48,6 +48,8 @@ egui-dmi/
 
 ## 变更记录说明
 
+- 2026-11-22：UI 触及方法改进落地——`UIEntry` 枚举、`DMIRecord` 五元组（parent 元组 +
+  function 功能映射）、严格声明制（匿名机制删除，缺一不注册）、demo 全量补齐声明。
 - 2026-11-22：DMI Phase 2 落地——`call_dmi` 统一调用入口 + `greet` 示例接口（硬编码调用）；
   `DMIUpdate` 纯数据化去 Response；demo 新增"DMI 自检"分区；依赖新增 serde_json。
 - 2026-11-22：`DMISelect` 新增 `grouped` 分组下拉（组=父号.n，选项=父号.n.m），

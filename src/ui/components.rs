@@ -3,12 +3,22 @@
 
 use crate::ui::design::DesignLanguages;
 use crate::ui::id::{self, DMIId, DMIWidgetKind};
+use crate::ui::UIEntry;
 use egui::{
     Color32, ComboBox, Id, IdSalt, Margin, RadioButton, Response, RichText, Sense, Stroke,
     StrokeKind, TextEdit, TextWrapMode, TextStyle, Ui, WidgetText,
 };
 use egui::emath::Numeric;
 use std::ops::RangeInclusive;
+
+/// 登记门：未声明名称的组件不注册（功能映射由 id 存储机制承载）。
+/// Gate: unnamed widgets stay unregistered; id layer owns the function map.
+fn register(egui_id: Id, kind: DMIWidgetKind, name: &Option<String>) -> DMIId {
+    let Some(given) = name else {
+        return DMIId::SYSTEM;
+    };
+    id::allocate(egui_id, kind, given.as_str(), &[])
+}
 
 // ============================================================================
 // 统一返回载体 DMI update
@@ -175,7 +185,7 @@ impl<'a> DMIButton<'a> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        let dmi_id = id::allocate(response.id, DMIWidgetKind::Button, self.dmi_name.as_deref(), None);
+        let dmi_id = register(response.id, DMIWidgetKind::Button, &self.dmi_name);
         let clicked = response.clicked();
         DMIUpdate::new(dmi_id, clicked, clicked)
     }
@@ -254,10 +264,7 @@ impl<'a> DMILabel<'a> {
         };
         // 匿名标签不登记：显示文本频繁变动，登记会反哺编号表自我增长。
         // Unnamed labels skip registration to stop registry self-amplification.
-        let dmi_id = match &self.dmi_name {
-            Some(given) => id::allocate(response.id, DMIWidgetKind::Label, Some(given), None),
-            None => DMIId::SYSTEM,
-        };
+        let dmi_id = register(response.id, DMIWidgetKind::Label, &self.dmi_name);
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -333,7 +340,7 @@ impl<'a> DMITextInput<'a> {
             .stroke(Stroke::new(1.0, tokens.colors.separator))
             .corner_radius(tokens.spacing.corner(tokens.spacing.radius_sm));
         let response = ui.add(edit.frame(frame));
-        let dmi_id = id::allocate(response.id, DMIWidgetKind::TextInput, self.dmi_name.as_deref(), None);
+        let dmi_id = register(response.id, DMIWidgetKind::TextInput, &self.dmi_name);
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -391,7 +398,7 @@ impl<'a> DMICheckbox<'a> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        let dmi_id = id::allocate(response.id, DMIWidgetKind::Checkbox, self.dmi_name.as_deref(), None);
+        let dmi_id = register(response.id, DMIWidgetKind::Checkbox, &self.dmi_name);
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -455,11 +462,18 @@ impl<'a> DMIRadio<'a> {
         let dmi_id = match &self.group {
             Some(group_name) => {
                 let parent_id =
-                    id::allocate(response.id, DMIWidgetKind::Radio, Some(group_name), None);
+                    id::allocate(response.id, DMIWidgetKind::Radio, group_name, &[]);
                 let child_name = format!("{group_name}_{}", sanitize_name(self.text));
-                id::allocate_child(response.id, DMIWidgetKind::Radio, &child_name, parent_id)
+                id::allocate_child(
+                    response.id,
+                    DMIWidgetKind::Radio,
+                    &child_name,
+                    parent_id,
+                    UIEntry::LeftClick,
+                    &[],
+                )
             }
-            None => id::allocate(response.id, DMIWidgetKind::Radio, self.dmi_name.as_deref(), None),
+            None => register(response.id, DMIWidgetKind::Radio, &self.dmi_name),
         };
         DMIUpdate::new(dmi_id, clicked, clicked)
     }
@@ -585,7 +599,7 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
             })
         });
         let inner = outer.inner;
-        let dmi_id = id::allocate(inner.response.id, DMIWidgetKind::Select, self.dmi_name.as_deref(), None);
+        let dmi_id = register(inner.response.id, DMIWidgetKind::Select, &self.dmi_name);
         // 分组模式自动启用小数编号：组领 父号.n，组内选项领 父号.n.m。
         // Grouped mode implies dotted ids: groups parent.n, options parent.n.m.
         if self.individual_ids || !self.groups.is_empty() {
@@ -593,8 +607,14 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
             let mut group_entries: Vec<(String, DMIId)> = Vec::with_capacity(drawn_groups.len());
             for (group_name, header_id) in &drawn_groups {
                 let child_name = format!("{base_name}_{}", sanitize_name(group_name));
-                let child_id =
-                    id::allocate_child(*header_id, DMIWidgetKind::Select, &child_name, dmi_id);
+                let child_id = id::allocate_child(
+                    *header_id,
+                    DMIWidgetKind::Select,
+                    &child_name,
+                    dmi_id,
+                    UIEntry::LeftClick,
+                    &[],
+                );
                 group_entries.push((child_name, child_id));
             }
             for (group_slot, option_text, option_id) in &drawn_options {
@@ -603,7 +623,14 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
                     None => (base_name.as_str(), dmi_id),
                 };
                 let child_name = format!("{parent_name}_{}", sanitize_name(option_text));
-                id::allocate_child(*option_id, DMIWidgetKind::Select, &child_name, parent_id);
+                id::allocate_child(
+                    *option_id,
+                    DMIWidgetKind::Select,
+                    &child_name,
+                    parent_id,
+                    UIEntry::LeftClick,
+                    &[],
+                );
             }
         }
         let chosen = inner.inner.flatten();
@@ -671,7 +698,7 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
             Some(hover_text) => response.on_hover_text(hover_text.clone()),
             None => response,
         };
-        let dmi_id = id::allocate(response.id, DMIWidgetKind::Slider, self.dmi_name.as_deref(), None);
+        let dmi_id = register(response.id, DMIWidgetKind::Slider, &self.dmi_name);
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -722,16 +749,28 @@ mod tests {
         for _frame in 0..300 {
             egui::__run_test_ui(|ui| {
                 DesignLanguages::install(ui.ctx());
-                let _ = DMIButton::primary("帧测").dmi_name("case_frame_button").show(ui);
+                let _ = DMIButton::primary("帧测")
+                    .dmi_name("case_frame_button")
+                    .show(ui);
                 // 未命名显示行：复刻旧版注册表/日志面板的排版来源。
                 // Unnamed display lines: the old registry/log row pattern.
                 DMILabel::mono("(1, \"button\", 0, \"case_frame_button\")").show(ui);
                 DMILabel::caption("快照说明").show(ui);
-                let _ = DMITextInput::new(&mut buffer).dmi_name("case_frame_field").show(ui);
-                let _ = DMICheckbox::new(&mut flag, "帧测").dmi_name("case_frame_check").show(ui);
-                let _ = DMIRadio::new(true, "帧测").dmi_name("case_frame_radio").show(ui);
-                let _ = DMISelect::new("帧测", &mut chosen, &options).dmi_name("case_frame_select").show(ui);
-                let _ = DMISlider::new(&mut number, 0.0..=1.0).dmi_name("case_frame_slider").show(ui);
+                let _ = DMITextInput::new(&mut buffer)
+                    .dmi_name("case_frame_field")
+                    .show(ui);
+                let _ = DMICheckbox::new(&mut flag, "帧测")
+                    .dmi_name("case_frame_check")
+                    .show(ui);
+                let _ = DMIRadio::new(true, "帧测")
+                    .dmi_name("case_frame_radio")
+                    .show(ui);
+                let _ = DMISelect::new("帧测", &mut chosen, &options)
+                    .dmi_name("case_frame_select")
+                    .show(ui);
+                let _ = DMISlider::new(&mut number, 0.0..=1.0)
+                    .dmi_name("case_frame_slider")
+                    .show(ui);
             });
         }
         let grown = id::list_id()
@@ -763,6 +802,19 @@ mod tests {
         assert_eq!(hits, 1, "未展开时只应有父号一条");
     }
 
+    /// 无名称的组件不注册（id 为 SYSTEM），功能映射由 id 层承载。
+    /// Unnamed widgets stay unregistered; the id layer owns function maps.
+    #[test]
+    fn undeclared_component_stays_unregistered() {
+        let mut plain_id = DMIId::SYSTEM;
+        egui::__run_test_ui(|ui| {
+            DesignLanguages::install(ui.ctx());
+            let plain = DMIButton::primary("未声明").show(ui);
+            plain_id = plain.id;
+        });
+        assert!(plain_id.is_system(), "无名称不得注册");
+    }
+
     /// 单选组重复渲染：1 父号 + 3 子号，不重号不增长。
     /// Radio group: one parent, three dotted children, stable across frames.
     #[test]
@@ -790,7 +842,11 @@ mod tests {
             .collect();
         assert_eq!(minors, vec![1, 2, 3], "子号按出现顺序 父号.1/.2/.3");
         for record in group_records.iter().filter(|record| !record.id.is_root()) {
-            assert_eq!(record.parent, parent.id, "子号 parent 指向父号");
+            assert_eq!(
+                record.parent,
+                (parent.id, UIEntry::LeftClick),
+                "子号 parent 元组指向父号与触及方式"
+            );
         }
     }
 
@@ -800,7 +856,9 @@ mod tests {
     fn named_label_registers_anonymous_does_not() {
         egui::__run_test_ui(|ui| {
             DesignLanguages::install(ui.ctx());
-            let _ = DMILabel::heading("章节").dmi_name("case_named_section_label").show(ui);
+            let _ = DMILabel::heading("章节")
+                .dmi_name("case_named_section_label")
+                .show(ui);
             DMILabel::caption("匿名行").show(ui);
         });
         let records = id::list_id();
@@ -839,7 +897,9 @@ mod tests {
         let mut dmi_id = DMIId::SYSTEM;
         egui::__run_test_ui(|ui| {
             DesignLanguages::install(ui.ctx());
-            let update = DMIButton::primary("注册").dmi_name("case_register_button").show(ui);
+            let update = DMIButton::primary("注册")
+                .dmi_name("case_register_button")
+                .show(ui);
             dmi_id = update.id;
         });
         assert!(!dmi_id.is_system());

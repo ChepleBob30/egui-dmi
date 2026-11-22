@@ -5,6 +5,7 @@ use eframe::egui;
 use egui_dmi::ui::id::{self, DMIWidgetKind};
 use egui_dmi::ui::{
     DesignLanguages, DMICheckbox, DMIButton, DMITextInput, DMILabel, DMIRadio, DMISelect, DMISlider,
+    UIEntry,
 };
 
 /// 场景预设分组：组名 + 组内选项，供多层编号下拉使用。
@@ -105,7 +106,9 @@ impl GalleryApp {
             if delete_update.clicked {
                 self.push_log(format!("[{}] 删除账号被点击", delete_update.id));
             }
-            let learn_update = DMIButton::text("了解更多").dmi_name("learn_button").show(ui);
+            let learn_update = DMIButton::text("了解更多")
+                .dmi_name("learn_button")
+                .show(ui);
             if learn_update.clicked {
                 self.push_log(format!("[{}] 了解更多被点击", learn_update.id));
             }
@@ -277,7 +280,9 @@ impl GalleryApp {
                 ),
             ];
             for (label, name, command) in probes {
-                let update = DMIButton::new(label).dmi_name(name).show(ui);
+                let update = DMIButton::new(label)
+                    .dmi_name(name)
+                    .show(ui);
                 if update.clicked {
                     self.probe_output = egui_dmi::dmi::call_dmi(command);
                     self.push_log(format!("[{}] DMI 自检完成", update.id));
@@ -296,13 +301,19 @@ impl GalleryApp {
         DMILabel::caption("同一块调色板同时用于文字颜色与背景颜色（对齐 dmi.md 示例）。")
             .show(ui);
         let shared_egui_id = egui::Id::NULL.with("shared_color_palette");
-        let text_plate_id =
-            id::allocate(shared_egui_id, DMIWidgetKind::Button, Some("text_color_plate"), None);
+        // 严格声明制下同一 egui id 的两个命名各自携带功能映射，仍得两个编号。
+        // Under the strict gate each named use declares its own capabilities.
+        let text_plate_id = id::allocate(
+            shared_egui_id,
+            DMIWidgetKind::Button,
+            "text_color_plate",
+            &[("apply_text", &[UIEntry::LeftClick])],
+        );
         let background_plate_id = id::allocate(
             shared_egui_id,
             DMIWidgetKind::Button,
-            Some("background_color_plate"),
-            None,
+            "background_color_plate",
+            &[("apply_background", &[UIEntry::LeftClick])],
         );
         DMILabel::mono(&format!("text_color_plate ⇒ id {text_plate_id}")).show(ui);
         DMILabel::mono(&format!("background_color_plate ⇒ id {background_plate_id}")).show(ui);
