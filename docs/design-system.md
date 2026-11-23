@@ -96,6 +96,10 @@ let response: String = egui_dmi::dmi::call_dmi(
 - 示例接口 `greet`（OBSERVATION、0 号）三档分别返回欢迎语、欢迎语+项目名、
   欢迎语+项目名+依赖；demo 画廊"DMI 自检"分区即该入口的界面化演示。
 
+运行时调用（dmi.md §2.2.2）：`DMIConsole::spawn(&ctx)` 启动独立线程读终端
+JSON 行，UI 帧首 `pump(ui)` 当帧执行并回执；串行在途、超时 10 秒、
+stdout 纯 JSON 行无提示符；输入输出只围绕终端，GUI 不出现控制台形态。
+
 ## DMI 修改范围
 
 大模型/DMI 层允许触碰的全部参数 = `ColorLanguages` 字段 + `SpacingTokens` 字段

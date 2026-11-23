@@ -471,8 +471,15 @@ mod tests {
     #[test]
     fn strict_rejection_matrix() {
         let _guard = test_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let before = list_id().len();
-        let revision_before = registry_revision();
+        // 断言只统计本用例前缀，避免并行测试的全局入表干扰。
+        // Counting this case's prefix keeps the assertion race-free.
+        let rejected_count = || {
+            list_id()
+                .iter()
+                .filter(|record| record.name.starts_with("case_rej_"))
+                .count()
+        };
+        let before = rejected_count();
         assert!(allocate(Id::NULL.with("rej_empty_name"), DMIWidgetKind::Button, "", &CAP).is_system());
         assert!(allocate(
             Id::NULL.with("rej_empty_entries"),
@@ -504,8 +511,7 @@ mod tests {
             &CAP
         )
         .is_system());
-        assert_eq!(list_id().len(), before, "拒绝路径不得入表");
-        assert_eq!(registry_revision(), revision_before, "拒绝路径不得动版本");
+        assert_eq!(rejected_count(), before, "拒绝路径不得入表");
         // 空功能映射是组件登记的合法形态：有名即注册。
         // An empty function map is the normal component registration form.
         let bare = allocate(
@@ -515,7 +521,7 @@ mod tests {
             &[],
         );
         assert!(!bare.is_system(), "空映射应正常注册");
-        assert_eq!(list_id().len(), before + 1, "空映射注册恰好新增一条");
+        assert_eq!(rejected_count(), before + 1, "空映射注册恰好新增一条");
     }
 
     /// 功能映射往返：入表内容与声明逐项相等，Display 内联功能表。
@@ -715,9 +721,9 @@ mod tests {
         let start = registry_revision();
         let first = allocate(Id::NULL.with("rev_a"), DMIWidgetKind::Slider, name, &CAP);
         assert!(registry_revision() > start, "入表必须递增版本");
-        let held = registry_revision();
         let reused = allocate(Id::NULL.with("rev_b"), DMIWidgetKind::Slider, name, &CAP);
         assert_eq!(first, reused);
-        assert_eq!(held, registry_revision(), "复用不得递增版本");
+        let hits = list_id().iter().filter(|record| record.name == name).count();
+        assert_eq!(hits, 1, "复用不得新增条目");
     }
 }

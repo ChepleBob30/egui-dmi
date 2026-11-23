@@ -3,6 +3,7 @@
 
 use eframe::egui;
 use egui_dmi::ui::id::{self, DMIWidgetKind};
+use egui_dmi::dmi::DMIConsole;
 use egui_dmi::ui::{
     DesignLanguages, DMICheckbox, DMIButton, DMITextInput, DMILabel, DMIRadio, DMISelect, DMISlider,
     UIEntry,
@@ -53,6 +54,9 @@ struct GalleryApp {
     registry_cache: Vec<String>,
     /// 缓存对应的注册表版本号。 / Registry revision the cache was built at.
     registry_revision: u64,
+    /// 运行时控制台：终端 JSON 行与帧循环的桥。
+    /// Runtime console bridging terminal JSON lines and the frame loop.
+    console: DMIConsole,
 }
 
 impl GalleryApp {
@@ -60,7 +64,9 @@ impl GalleryApp {
     /// Initializes from context: installs design language, sets defaults.
     fn new(creation_context: &eframe::CreationContext<'_>) -> Self {
         DesignLanguages::install(&creation_context.egui_ctx);
+        let console = DMIConsole::spawn(&creation_context.egui_ctx);
         Self {
+            console,
             username: String::new(),
             password: String::new(),
             notifications_on: true,
@@ -364,6 +370,9 @@ impl eframe::App for GalleryApp {
     /// 每帧渲染：面板布局 + 组件分区 + 主题同步。
     /// Renders each frame: panels, sections, theme sync.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // 帧首消费终端指令：当帧执行、当帧回执（dmi.md §2.2.2）。
+        // Frame-start pump: queued console commands run within this frame.
+        self.console.pump(ui);
         egui::Panel::top("header_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
                 DMILabel::heading("DMI 组件画廊 · egui-dmi 测试用例").show(ui);

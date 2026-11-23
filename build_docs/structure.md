@@ -31,11 +31,14 @@ egui-dmi/
 │   └── dmi/
 │       ├── call.rs              # 接口总调用区：DMICommand/DMIRequestType/DMIComplexity/DMIFailure 契约，
 │       │                        #   parse_command 解析、ok_response/fail_response 分层应答、call_dmi 分发器。
-│       └── interface.rs         # 各接口具体实现区：greet 示例接口（OBSERVATION 三档应答）。
+│       ├── interface.rs         # 各接口具体实现区：greet 示例接口（OBSERVATION 三档应答）。
+│       └── console.rs           # 运行时控制台：stdin 独立线程 + 帧首 pump 当帧执行；
+│                                #   串行在途、每命令回执通道、10 秒 CONSOLE_TIMEOUT 兜底。
 ├── demo/
 │   └── dmi_gallery/               # eframe 组件画廊示例（workspace 成员，cargo run -p dmi-gallery）。
 │       ├── Cargo.toml             # 依赖：eframe 0.37 + path 依赖 egui-dmi。
-│       └── src/main.rs            # GalleryApp：七组件实测 + list_id() 注册表面板 + 交互日志 + 主题切换 + DMI 自检分区。
+│       └── src/main.rs            # GalleryApp：七组件实测 + list_id() 注册表面板 + 交互日志 + 主题切换
+│                                  #   + DMI 自检分区 + 运行时控制台接线（spawn+pump）。
 ├── docs/
 │   ├── design-system.md           # 设计语言与组件视觉规范说明。
 │   └── id-system.md               # DMI 组件ID分配系统：运作流程、reuse 机制逐方法设计理由、边界与演进。
@@ -48,6 +51,8 @@ egui-dmi/
 
 ## 变更记录说明
 
+- 2026-11-23：DMI Phase 3 落地——`dmi/console.rs` 运行时控制台（终端 JSON 行、
+  独立线程、帧首 pump 当帧执行、串行在途、10 秒超时），demo 接线 spawn+pump。
 - 2026-11-22：UI 触及方法改进落地——`UIEntry` 枚举、`DMIRecord` 五元组（parent 元组 +
   function 功能映射）、严格声明制（匿名机制删除，缺一不注册）、demo 全量补齐声明。
 - 2026-11-22：DMI Phase 2 落地——`call_dmi` 统一调用入口 + `greet` 示例接口（硬编码调用）；

@@ -2,6 +2,8 @@
 //! DMI module root: dispatcher area, interface area, and public re-exports.
 
 pub mod call;
+pub mod console;
 pub mod interface;
 
 pub use call::{call_dmi, DMICommand, DMIComplexity, DMIFailure, DMIRequestType};
+pub use console::DMIConsole;
