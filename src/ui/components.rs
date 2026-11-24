@@ -1,6 +1,7 @@
 //! DMI 组件：对 egui 基础控件的声明式封装，统一颜色与圆角风格。
 //! DMI components: declarative wrappers over egui base widgets.
 
+use crate::dmi::observe::{self, DMIBasics, DMIFlags, DMIWidgetSnapshot};
 use crate::ui::design::DesignLanguages;
 use crate::ui::id::{self, DMIId, DMIWidgetKind};
 use crate::ui::UIEntry;
@@ -186,6 +187,15 @@ impl<'a> DMIButton<'a> {
             None => response,
         };
         let dmi_id = register(response.id, DMIWidgetKind::Button, &self.dmi_name);
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: DMIBasics::Button { text: self.text.to_owned() },
+                flags: DMIFlags::from_response(&response, self.enabled),
+                rect: observe::response_rect(&response),
+                visible: response.visible(),
+            },
+        );
         let clicked = response.clicked();
         DMIUpdate::new(dmi_id, clicked, clicked)
     }
@@ -265,6 +275,23 @@ impl<'a> DMILabel<'a> {
         // 匿名标签不登记：显示文本频繁变动，登记会反哺编号表自我增长。
         // Unnamed labels skip registration to stop registry self-amplification.
         let dmi_id = register(response.id, DMIWidgetKind::Label, &self.dmi_name);
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: DMIBasics::Label {
+                text: self.text.to_owned(),
+                tier: match self.style {
+                    TextStyle::Heading => "heading",
+                    TextStyle::Small => "caption",
+                    TextStyle::Monospace => "mono",
+                    _ => "body",
+                },
+            },
+                flags: DMIFlags::from_response(&response, true),
+                rect: observe::response_rect(&response),
+                visible: response.visible(),
+            },
+        );
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -341,6 +368,19 @@ impl<'a> DMITextInput<'a> {
             .corner_radius(tokens.spacing.corner(tokens.spacing.radius_sm));
         let response = ui.add(edit.frame(frame));
         let dmi_id = register(response.id, DMIWidgetKind::TextInput, &self.dmi_name);
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: DMIBasics::TextInput {
+                text: self.buffer.clone(),
+                placeholder: self.placeholder.clone(),
+                password: self.password,
+            },
+                flags: DMIFlags::from_response(&response, self.enabled),
+                rect: observe::response_rect(&response),
+                visible: response.visible(),
+            },
+        );
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -399,6 +439,18 @@ impl<'a> DMICheckbox<'a> {
             None => response,
         };
         let dmi_id = register(response.id, DMIWidgetKind::Checkbox, &self.dmi_name);
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: DMIBasics::Checkbox {
+                text: self.text.to_owned(),
+                checked: *self.checked,
+            },
+                flags: DMIFlags::from_response(&response, self.enabled),
+                rect: observe::response_rect(&response),
+                visible: response.visible(),
+            },
+        );
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }
@@ -475,6 +527,25 @@ impl<'a> DMIRadio<'a> {
             }
             None => register(response.id, DMIWidgetKind::Radio, &self.dmi_name),
         };
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: if self.group.is_some() {
+                    DMIBasics::OptionItem {
+                        text: self.text.to_owned(),
+                        selected: self.selected,
+                    }
+                } else {
+                    DMIBasics::Radio {
+                        text: self.text.to_owned(),
+                        selected: self.selected,
+                    }
+                },
+                flags: DMIFlags::from_response(&response, self.enabled),
+                rect: observe::response_rect(&response),
+                visible: response.visible(),
+            },
+        );
         DMIUpdate::new(dmi_id, clicked, clicked)
     }
 }
@@ -563,15 +634,17 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         // 登记素材：组头（名称, egui id）与选项（所属组槽位, 文本, egui id）。
         // Collected for registration: group headers and options with slot info.
         let mut drawn_groups: Vec<(String, Id)> = Vec::new();
-        let mut drawn_options: Vec<(Option<usize>, String, Id)> = Vec::new();
+        let mut drawn_options: Vec<(Option<usize>, String, bool, Response)> = Vec::new();
         let outer = ui.add_enabled_ui(self.enabled, |ui| {
             combo.show_ui(ui, |ui| {
                 if self.groups.is_empty() {
                     for option in self.options {
                         let option_response =
                             ui.selectable_label(option == self.current, option.to_string());
-                        drawn_options.push((None, option.to_string(), option_response.id));
-                        if option_response.clicked() {
+                        let option_selected = option == self.current;
+                        let option_clicked = option_response.clicked();
+                        drawn_options.push((None, option.to_string(), option_selected, option_response));
+                        if option_clicked {
                             picked = Some(option.clone());
                         }
                     }
@@ -587,9 +660,15 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
                         for option in *group_options {
                             let option_response =
                                 ui.selectable_label(option == self.current, option.to_string());
-                            drawn_options
-                                .push((Some(group_index), option.to_string(), option_response.id));
-                            if option_response.clicked() {
+                            let option_selected = option == self.current;
+                            let option_clicked = option_response.clicked();
+                            drawn_options.push((
+                                Some(group_index),
+                                option.to_string(),
+                                option_selected,
+                                option_response,
+                            ));
+                            if option_clicked {
                                 picked = Some(option.clone());
                             }
                         }
@@ -617,19 +696,31 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
                 );
                 group_entries.push((child_name, child_id));
             }
-            for (group_slot, option_text, option_id) in &drawn_options {
+            for (group_slot, option_text, option_selected, option_response) in &drawn_options {
                 let (parent_name, parent_id) = match group_slot {
                     Some(index) => (group_entries[*index].0.as_str(), group_entries[*index].1),
                     None => (base_name.as_str(), dmi_id),
                 };
                 let child_name = format!("{parent_name}_{}", sanitize_name(option_text));
-                id::allocate_child(
-                    *option_id,
+                let child_id = id::allocate_child(
+                    option_response.id,
                     DMIWidgetKind::Select,
                     &child_name,
                     parent_id,
                     UIEntry::LeftClick,
                     &[],
+                );
+                observe::observe(
+                    child_id,
+                    DMIWidgetSnapshot {
+                        basics: DMIBasics::OptionItem {
+                            text: option_text.clone(),
+                            selected: *option_selected,
+                        },
+                        flags: DMIFlags::from_response(option_response, self.enabled),
+                        rect: observe::response_rect(option_response),
+                        visible: option_response.visible(),
+                    },
                 );
             }
         }
@@ -638,6 +729,18 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         if let Some(value) = chosen {
             *self.current = value;
         }
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: DMIBasics::Select {
+                current: self.current.to_string(),
+                options: self.options.iter().map(ToString::to_string).collect(),
+            },
+                flags: DMIFlags::from_response(&inner.response, self.enabled),
+                rect: observe::response_rect(&inner.response),
+                visible: inner.response.visible(),
+            },
+        );
         DMIUpdate::new(dmi_id, inner.response.clicked(), changed)
     }
 }
@@ -689,6 +792,8 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
     /// 渲染滑块。 / Renders the slider.
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
+        let range_start = (*self.range.start()).to_f64();
+        let range_end = (*self.range.end()).to_f64();
         let mut slider = egui::Slider::new(self.value, self.range);
         if let Some(label) = self.label {
             slider = slider.text(label);
@@ -699,6 +804,20 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
             None => response,
         };
         let dmi_id = register(response.id, DMIWidgetKind::Slider, &self.dmi_name);
+        observe::observe(
+            dmi_id,
+            DMIWidgetSnapshot {
+                basics: DMIBasics::Slider {
+                label: self.label.map(str::to_owned),
+                value: (*self.value).to_f64(),
+                minimum: range_start,
+                maximum: range_end,
+            },
+                flags: DMIFlags::from_response(&response, true),
+                rect: observe::response_rect(&response),
+                visible: response.visible(),
+            },
+        );
         DMIUpdate::from_parts(dmi_id, &response)
     }
 }

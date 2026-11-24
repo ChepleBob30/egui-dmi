@@ -22,6 +22,7 @@ egui-dmi/
 │   │   │                          #   SpacingTokens 内边距/圆角/控件尺寸令牌；
 │   │   │                          #   DesignLanguages 聚合 + apply/install 写入 egui 全局样式（深浅两套）。
 │   │   └── components.rs          # DMI 组件（单文件）：七组件以 dmi_name 过登记门（无名不注册），不持有 function；
+│   │                              #   show() 尾部向 dmi/observe 推送现场快照（文本/勾选/数值/矩形）；
 │   │                              #   DMIUpdate 为纯数据 {id, clicked, changed}（Response 不出 show）；
 │   │                              #   DMIButton(primary/destructive/text…)自绘四态着色；
 │   │                              #   DMISelect 扁平 individual_ids 子号 / grouped 分组三层号；
@@ -32,13 +33,16 @@ egui-dmi/
 │       ├── call.rs              # 接口总调用区：DMICommand/DMIRequestType/DMIComplexity/DMIFailure 契约，
 │       │                        #   parse_command 解析、ok_response/fail_response 分层应答、call_dmi 分发器。
 │       ├── interface.rs         # 各接口具体实现区：greet 示例接口（OBSERVATION 三档应答）。
-│       └── console.rs           # 运行时控制台：stdin 独立线程 + 帧首 pump 当帧执行；
-│                                #   串行在途、每命令回执通道、10 秒 CONSOLE_TIMEOUT 兜底。
+│       ├── console.rs           # 运行时控制台：stdin 独立线程 + 帧尾 pump 当帧执行；
+│       │                        #   串行在途、每命令回执通道、10 秒 CONSOLE_TIMEOUT 兜底。
+│       └── observe.rs           # 观察快照表：组件每帧推送 basics/flags/rect/visible，
+│                                #   读取类接口（check_widget_status）的数据源；SYSTEM 拒收。
 ├── demo/
 │   └── dmi_gallery/               # eframe 组件画廊示例（workspace 成员，cargo run -p dmi-gallery）。
 │       ├── Cargo.toml             # 依赖：eframe 0.37 + path 依赖 egui-dmi。
 │       └── src/main.rs            # GalleryApp：七组件实测 + list_id() 注册表面板 + 交互日志 + 主题切换
-│                                  #   + DMI 自检分区 + 运行时控制台接线（spawn+pump）。
+│                                  #   + DMI 调用测试台（三下拉选接口/类型/档位 + 调用按钮）
+│                                  #   + 运行时控制台接线（spawn + 帧尾 pump）。
 ├── docs/
 │   ├── design-system.md           # 设计语言与组件视觉规范说明。
 │   └── id-system.md               # DMI 组件ID分配系统：运作流程、reuse 机制逐方法设计理由、边界与演进。
@@ -51,6 +55,9 @@ egui-dmi/
 
 ## 变更记录说明
 
+- 2026-11-24：DMI Phase 4 落地——`observe.rs` 观察快照 + `check_widget_status` 三档接口；
+  组件 show() 推送快照；demo 自检四按钮移除、改为三下拉+调用按钮测试台；
+  控制台 pump 移至帧尾消除启动竞态。
 - 2026-11-23：DMI Phase 3 落地——`dmi/console.rs` 运行时控制台（终端 JSON 行、
   独立线程、帧首 pump 当帧执行、串行在途、10 秒超时），demo 接线 spawn+pump。
 - 2026-11-22：UI 触及方法改进落地——`UIEntry` 枚举、`DMIRecord` 五元组（parent 元组 +

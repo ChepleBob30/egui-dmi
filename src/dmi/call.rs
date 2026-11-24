@@ -242,6 +242,7 @@ pub fn call_dmi(command: &str) -> String {
     };
     match parsed.interface.as_str() {
         "greet" => interface::greet(&parsed),
+        "check_widget_status" => interface::check_widget_status(&parsed),
         _ => fail_response(&INTERFACE_NOT_FOUND, parsed.complexity),
     }
 }

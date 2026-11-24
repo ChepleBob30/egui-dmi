@@ -46,9 +46,21 @@ struct GalleryApp {
     volume_value: i32,
     /// 交互日志（最新在前）。 / Interaction log, newest first.
     interaction_log: Vec<String>,
-    /// 最近一次 DMI 硬编码调用的应答 JSON。
-    /// JSON response of the latest hardcoded call_dmi probe.
+    /// 最近一次 call_dmi 调用的应答 JSON。
+    /// JSON response of the latest call_dmi invocation.
     probe_output: String,
+    /// 测试台：当前所选接口名。 / Bench: selected interface name.
+    probe_interface: String,
+    /// 测试台：接口候选。 / Bench: interface options.
+    probe_interface_options: Vec<String>,
+    /// 测试台：当前所选请求类型。 / Bench: selected request kind.
+    probe_request_type: String,
+    /// 测试台：请求类型候选。 / Bench: request kind options.
+    probe_request_type_options: Vec<String>,
+    /// 测试台：当前所选复杂度。 / Bench: selected complexity.
+    probe_complexity: String,
+    /// 测试台：复杂度候选。 / Bench: complexity options.
+    probe_complexity_options: Vec<String>,
     /// 注册表行文本缓存，仅版本变化时重建。
     /// Cached registry rows, rebuilt only on revision change.
     registry_cache: Vec<String>,
@@ -80,7 +92,13 @@ impl GalleryApp {
             speed_value: 1.0,
             volume_value: 60,
             interaction_log: Vec::new(),
-            probe_output: "（点击上方按钮发起硬编码调用）".to_owned(),
+            probe_output: "（配置三个下拉后点击「调用」执行 call_dmi）".to_owned(),
+            probe_interface: "greet".to_owned(),
+            probe_interface_options: ["greet", "check_widget_status"].map(str::to_owned).to_vec(),
+            probe_request_type: "OBSERVATION".to_owned(),
+            probe_request_type_options: ["OBSERVATION", "ACCESS", "STATE"].map(str::to_owned).to_vec(),
+            probe_complexity: "standard".to_owned(),
+            probe_complexity_options: ["simple", "standard", "complex"].map(str::to_owned).to_vec(),
             registry_cache: Vec::new(),
             registry_revision: 0,
         }
@@ -258,41 +276,67 @@ impl GalleryApp {
         });
     }
 
-    /// DMI 自检分区：硬编码调用 call_dmi，验证统一入口与分层应答。
-    /// Probe section: hardcoded call_dmi checks the entry and tiering.
+    /// DMI 调用测试台：三个下拉选择接口/类型/复杂度，按钮执行 call_dmi。
+    /// Invocation bench: three selects pick interface, kind, tier; button runs it.
     fn show_dmi_probe_section(&mut self, ui: &mut egui::Ui) {
-        DMILabel::heading("DMI 自检（硬编码调用）").dmi_name("section_probe_label").show(ui);
+        DMILabel::heading("DMI 调用测试台（call_dmi）")
+            .dmi_name("section_probe_label")
+            .show(ui);
+        DMILabel::caption(
+            "check_widget_status 按注册名动态定位「save_button」的编号；greet 使用系统 0 号。",
+        )
+        .show(ui);
         ui.horizontal(|ui| {
-            let probes: [(&str, &str, &str); 4] = [
-                (
-                    "greet simple",
-                    "dmi_probe_simple",
-                    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"simple\"}",
-                ),
-                (
-                    "greet standard",
-                    "dmi_probe_standard",
-                    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"standard\"}",
-                ),
-                (
-                    "greet complex",
-                    "dmi_probe_complex",
-                    "{\"request_type\":\"OBSERVATION\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"complex\"}",
-                ),
-                (
-                    "非法请求示范",
-                    "dmi_probe_failure",
-                    "{\"request_type\":\"ACCESS\",\"interface\":\"greet\",\"target_id\":0,\"complexity\":\"complex\"}",
-                ),
-            ];
-            for (label, name, command) in probes {
-                let update = DMIButton::new(label)
-                    .dmi_name(name)
-                    .show(ui);
-                if update.clicked {
-                    self.probe_output = egui_dmi::dmi::call_dmi(command);
-                    self.push_log(format!("[{}] DMI 自检完成", update.id));
-                }
+            ui.label("接口　");
+            let interface_update = DMISelect::new(
+                "probe_interface",
+                &mut self.probe_interface,
+                &self.probe_interface_options,
+            )
+            .dmi_name("probe_interface_select")
+            .show(ui);
+            let _ = interface_update;
+            ui.label("类型　");
+            let kind_update = DMISelect::new(
+                "probe_request_type",
+                &mut self.probe_request_type,
+                &self.probe_request_type_options,
+            )
+            .dmi_name("probe_request_type_select")
+            .show(ui);
+            let _ = kind_update;
+        });
+        ui.horizontal(|ui| {
+            ui.label("档位　");
+            let tier_update = DMISelect::new(
+                "probe_complexity",
+                &mut self.probe_complexity,
+                &self.probe_complexity_options,
+            )
+            .dmi_name("probe_complexity_select")
+            .show(ui);
+            let _ = tier_update;
+            // 调用按钮：按三项选择组装命令，应答写回输出行与交互日志。
+            // Run button assembles the command and records the response.
+            let run_update = DMIButton::primary("调用").dmi_name("dmi_probe_run").show(ui);
+            if run_update.clicked {
+                // 目标编号：greet 用 0 号；状态检查按名称在注册表实时反查。
+                // greet targets system zero; status check resolves by name.
+                let target_id = if self.probe_interface == "greet" {
+                    "0".to_owned()
+                } else {
+                    egui_dmi::ui::list_id()
+                        .iter()
+                        .find(|record| record.name == "save_button")
+                        .map(|record| record.id.to_string())
+                        .unwrap_or_else(|| "0".to_owned())
+                };
+                let command = format!(
+                    "{{\"request_type\":\"{}\",\"interface\":\"{}\",\"target_id\":{},\"complexity\":\"{}\"}}",
+                    self.probe_request_type, self.probe_interface, target_id, self.probe_complexity
+                );
+                self.probe_output = egui_dmi::dmi::call_dmi(&command);
+                self.push_log(format!("[{}] 调用完成", run_update.id));
             }
         });
         DMILabel::mono(&self.probe_output).show(ui);
@@ -370,9 +414,6 @@ impl eframe::App for GalleryApp {
     /// 每帧渲染：面板布局 + 组件分区 + 主题同步。
     /// Renders each frame: panels, sections, theme sync.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // 帧首消费终端指令：当帧执行、当帧回执（dmi.md §2.2.2）。
-        // Frame-start pump: queued console commands run within this frame.
-        self.console.pump(ui);
         egui::Panel::top("header_panel").show(ui, |ui| {
             ui.horizontal(|ui| {
                 DMILabel::heading("DMI 组件画廊 · egui-dmi 测试用例").show(ui);
@@ -397,6 +438,9 @@ impl eframe::App for GalleryApp {
                 self.show_palette_rule_section(ui);
             });
         });
+        // 帧尾消费终端指令：本帧到达的命令在本帧执行，注册表与快照已就绪。
+        // Frame-end pump: commands land after this frame's registrations.
+        self.console.pump(ui);
     }
 }
 

@@ -4,6 +4,8 @@
 pub mod call;
 pub mod console;
 pub mod interface;
+pub mod observe;
 
 pub use call::{call_dmi, DMICommand, DMIComplexity, DMIFailure, DMIRequestType};
 pub use console::DMIConsole;
+pub use observe::{DMIBasics, DMIFlags, DMIWidgetSnapshot, snapshot_of};

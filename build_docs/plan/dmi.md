@@ -127,3 +127,30 @@ Access用于让智能体声明目标组件，底层的导航与基础点击操�
 { "result": "OK", "greet_text": "hello, egui-dmi.", "project_name": "egui-dmi", "dependencies": "egui 0.37.0" }
 { "result": "FAILED", "reason": "Project name not found.", "error_code": "PROJECT_NAME_NOT_FOUND", "suggestion": "Try again later." }
 ```
+
+## 3 读取类接口
+
+读取型接口，包括Observation和Access，主要开放基本信息、可用性、上下文三条。
+展开来说，基本信息指用于达成组件本身作用的信息，例如输入框的文本，单选按钮的选项及选中项等。可用性基本囊括`egui Response`的一系列字段，包括组件是否可用。上下文主要包含组件的定位信息及状态，例如坐标位置、可见性等。
+
+### 3.1 Observation接口实现
+
+对于任意组件，都可以使用`check_widget_status`接口来检查状态。该接口支持Observation和Access两种类型，此处先说明Observation类型。一个调用示例如下：
+```json
+{ "request_type": "OBSERVATION", "interface": "check_widget_status", "target_id": 1, "complexity": "simple" }
+
+{ "result": "OK", "widget_name": "enable_quick_search", "widget_type": "button", "widget_text": "Enable quick search" }
+{ "result": "FAILED" }
+
+{ "request_type": "OBSERVATION", "interface": "check_widget_status", "target_id": 1, "complexity": "standard" }
+
+{ "result": "OK", "widget_name": "enable_quick_search", "widget_type": "button", "widget_text": "Enable quick search", "enabled": true, "widget_function": { "apply": "LeftClick" } }
+{ "result": "FAILED", "reason": "Target id invalid.", "error_code": "TARGET_ID_INVALID" }
+
+{ "request_type": "OBSERVATION", "interface": "check_widget_status", "target_id": 1, "complexity": "standard" }
+
+{ "result": "OK", "widget_name": "enable_quick_search", "widget_type": "button", "widget_text": "Enable quick search", "enabled": true, "widget_function": { "apply": "LeftClick" }, "rect": { "x": 120.0, "y": 500.0, "w": 200.0, "h": 24.0 },
+"visible": true }
+{ "result": "FAILED", "reason": "Target id invalid.", "error_code": "TARGET_ID_INVALID", "suggestion": "Recheck your id list and call it properly." }
+```
+此示例并不完全对应实际调用效果，仅供参考。

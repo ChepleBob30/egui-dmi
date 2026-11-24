@@ -94,7 +94,12 @@ let response: String = egui_dmi::dmi::call_dmi(
 - 失败应答分层：simple 仅 `result`；standard 加 `reason` 与 `error_code`；
   complex 再加 `suggestion`；解析失败的命令统一按 standard 兜底；
 - 示例接口 `greet`（OBSERVATION、0 号）三档分别返回欢迎语、欢迎语+项目名、
-  欢迎语+项目名+依赖；demo 画廊"DMI 自检"分区即该入口的界面化演示。
+  欢迎语+项目名+依赖；
+- 读取类接口 `check_widget_status`（OBSERVATION，target 为组件编号）：
+  simple 返回 `widget_name/widget_type/widget_text`，standard 加
+  `enabled/widget_function`，complex 加可用性位与 `rect/visible`——
+  数据来自组件每帧推送到 `dmi/observe.rs` 的现场快照；
+  demo 画廊"DMI 调用测试台"分区以三个下拉（接口/类型/档位）+ 调用按钮实测该入口。
 
 运行时调用（dmi.md §2.2.2）：`DMIConsole::spawn(&ctx)` 启动独立线程读终端
 JSON 行，UI 帧首 `pump(ui)` 当帧执行并回执；串行在途、超时 10 秒、
