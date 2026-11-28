@@ -1,5 +1,5 @@
-//! DMI 模块根：声明总调用区与接口实现区，再导出公开契约。
-//! DMI module root: dispatcher area, interface area, and public re-exports.
+//! DMI 层总入口：声明各子模块，并导出对外的接口。
+//! DMI entry file: declares submodules and exports the public interface.
 
 pub mod call;
 pub mod console;

@@ -12,8 +12,8 @@ use egui::{
 use egui::emath::Numeric;
 use std::ops::RangeInclusive;
 
-/// 登记门：未声明名称的组件不注册（功能映射由 id 存储机制承载）。
-/// Gate: unnamed widgets stay unregistered; id layer owns the function map.
+/// 未声明名称的组件不登记；功能映射保存在编号注册表一层。
+/// Unnamed widgets stay unregistered; the id layer owns the function map.
 fn register(egui_id: Id, kind: DMIWidgetKind, name: &Option<String>) -> DMIId {
     let Some(given) = name else {
         return DMIId::SYSTEM;
@@ -25,10 +25,10 @@ fn register(egui_id: Id, kind: DMIWidgetKind, name: &Option<String>) -> DMIId {
 // 统一返回载体 DMI update
 // ============================================================================
 
-/// 组件 `show()` 的统一返回：纯 DMI 数据记录，egui::Response 不再越过出口。
+/// 组件 show() 的统一返回值：只包含数据，不携带 egui::Response。
 /// Shared widget return as pure DMI data; the egui Response stays inside show().
 ///
-/// `DMI标记`：id 即未来 JSON 调用的 target_id；clicked/changed 两个状态位
+/// `DMI标记`：id 是将来 JSON 调用中的 target_id；两个布尔值
 /// 将由运行时通道序列化回传模型，更细状态按需增补字段而不回引 Response。
 /// Marker: id feeds future JSON target_id; flags serialize over the runtime channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,12 +43,12 @@ pub struct DMIUpdate {
 }
 
 impl DMIUpdate {
-    /// 由编号与两个状态位构造。 / Build from id and the two state flags.
+    /// 用编号和两个布尔值构造返回值。 / Build from id and the two state flags.
     pub fn new(id: DMIId, clicked: bool, changed: bool) -> Self {
         Self { id, clicked, changed }
     }
 
-    /// 从 egui 响应提取状态位；仅在 show() 内部使用，出口不外泄 Response。
+    /// 从交互结果中提取两个布尔值，只在 show() 内部使用。
     /// Extracts flags from a response; internal to show(), never leaks out.
     fn from_parts(id: DMIId, response: &Response) -> Self {
         Self { id, clicked: response.clicked(), changed: response.changed() }
@@ -72,7 +72,7 @@ pub enum DMIButtonKind {
     Text,
 }
 
-/// 封装按钮：常态/悬停/按下/禁用四态着色、悬停提示与统一圆角。
+/// 封装按钮：按悬停、按下、禁用等状态着色，带悬停提示和圆角。
 /// Button wrapper: four-state fills, tooltip and unified radius.
 #[derive(Debug, Clone)]
 pub struct DMIButton<'a> {
@@ -128,7 +128,7 @@ impl<'a> DMIButton<'a> {
         self
     }
 
-    /// 渲染按钮：测量文字、分配区域、按状态绘制底色与文字。
+    /// 显示按钮：测量文字大小，按当前状态绘制底色和文字。
     /// Renders: measures text, allocates rect, paints fill and label by state.
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
@@ -213,7 +213,7 @@ pub struct DMILabel<'a> {
     text: &'a str,
     /// 是否弱色（说明档）。 / Weak (caption) color flag.
     caption: bool,
-    /// 渲染文本样式档位。 / egui text style tier.
+    /// 使用的 egui 文本样式，四种文字形式之一。 / egui text style tier.
     style: TextStyle,
     /// 悬停提示文本。 / Hover tooltip text.
     tooltip: Option<String>,
@@ -255,7 +255,7 @@ impl<'a> DMILabel<'a> {
         self
     }
 
-    /// 渲染标签：字号走 egui 文本样式，颜色取自调色板。
+    /// 显示标签：字号使用 egui 文本样式，颜色取自调色板。
     /// Renders label: size via egui text styles, color via palette.
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let colors = DesignLanguages::from_ui(ui).colors;
@@ -346,8 +346,8 @@ impl<'a> DMITextInput<'a> {
         self
     }
 
-    /// 渲染输入框：框体底色/描边/圆角来自设计语言。
-    /// Renders the field with frame colors and radius from tokens.
+    /// 显示输入框：底色、描边和圆角都来自设计参数。
+    /// Renders the field with frame colors and radius from the design parameters.
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let tokens = DesignLanguages::from_ui(ui);
@@ -429,7 +429,7 @@ impl<'a> DMICheckbox<'a> {
         self
     }
 
-    /// 渲染复选框。 / Renders the checkbox.
+    /// 显示复选框。 / Renders the checkbox.
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let box_widget = egui::Checkbox::new(self.checked, self.text);
@@ -471,7 +471,7 @@ pub struct DMIRadio<'a> {
     /// DMI 注册名称（命名不同则额外分配编号）。
     /// Explicit DMI name; a different name allocates its own id.
     dmi_name: Option<String>,
-    /// 组名：同组单选框归属统一父号并领取小数子号。
+    /// 组名：同组单选框共用一个父编号，成员各自得到小数子编号。
     /// Group name: radios share one parent id and get dotted child ids.
     group: Option<String>,
 }
@@ -501,14 +501,14 @@ impl<'a> DMIRadio<'a> {
         self
     }
 
-    /// 渲染单选框；changed 语义为"本次被点选"。
+    /// 显示单选框；changed 的含义是"本次被点选"。
     /// Renders radio; changed means "picked on this click".
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let radio = RadioButton::new(self.selected, self.text);
         let response = ui.add_enabled(self.enabled, radio);
         let clicked = response.clicked();
-        // 组模式：组名首现发统一父号，本控件按"组名_选项文本"领取小数子号。
+        // 组模式：组名第一次出现时分配父编号，成员按"组名_选项文本"得到子编号。
         // Group mode: first sighting issues the shared parent id; this widget
         // takes a dotted child id named "<group>_<option>".
         let dmi_id = match &self.group {
@@ -554,7 +554,7 @@ impl<'a> DMIRadio<'a> {
 // 下拉菜单 Select
 // ============================================================================
 
-/// 封装下拉菜单：绑定当前值与候选列表，选中即写回；支持分组多层编号。
+/// 封装下拉菜单：绑定当前值与候选列表，选中后写回；支持分组多层编号。
 /// Select wrapper: binds value and options; grouped mode adds grandchild ids.
 pub struct DMISelect<'a, Value: PartialEq + Clone + std::fmt::Display> {
     /// 菜单标识文本（兼作 id 盐）。 / Label acting as combo id salt.
@@ -620,7 +620,7 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         self
     }
 
-    /// 渲染下拉菜单：弹出层逐项可选，选中写回并置 changed。
+    /// 显示下拉菜单：弹出层逐项可选，选中后写回并置 changed。
     /// Renders combo; picking an option writes back with changed set.
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
@@ -631,7 +631,7 @@ impl<'a, Value: PartialEq + Clone + std::fmt::Display> DMISelect<'a, Value> {
         // 禁用态通过 add_enabled_ui 屏蔽整棵子 UI。
         // Disabled state blocks the whole child ui via add_enabled_ui.
         let mut picked: Option<Value> = None;
-        // 登记素材：组头（名称, egui id）与选项（所属组槽位, 文本, egui id）。
+        // 先收集登记所需信息：组头与选项的名称和 egui 身份。
         // Collected for registration: group headers and options with slot info.
         let mut drawn_groups: Vec<(String, Id)> = Vec::new();
         let mut drawn_options: Vec<(Option<usize>, String, bool, Response)> = Vec::new();
@@ -789,7 +789,7 @@ impl<'a, Value: Numeric> DMISlider<'a, Value> {
         self
     }
 
-    /// 渲染滑块。 / Renders the slider.
+    /// 显示滑块。 / Renders the slider.
     #[must_use = "交互组件结果应被检查 / inspect the interactive widget result"]
     pub fn show(self, ui: &mut Ui) -> DMIUpdate {
         let range_start = (*self.range.start()).to_f64();
@@ -856,7 +856,7 @@ mod tests {
         assert!(!clicked && !changed);
     }
 
-    /// 多帧重复渲染不得使注册表增长：匿名标签免登记、命名组件复用。
+    /// 连续多帧绘制不会让注册表增长：匿名标签不登记，命名组件复用。
     /// 300 frames must not grow the registry: free labels skip, names reuse.
     #[test]
     fn frames_do_not_grow_registry() {
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(grown, 6, "300 帧只应新增本用例的 6 条命名控件（匿名标签不登记）");
     }
 
-    /// 分组下拉收起状态：仅父号入表，展开登记子/孙号由机制测试覆盖。
+    /// 分组下拉收起时只登记父编号，展开后的登记由机制测试覆盖。
     /// Closed grouped select registers only the parent id.
     #[test]
     fn grouped_select_closed_registers_parent_only() {
@@ -934,7 +934,7 @@ mod tests {
         assert!(plain_id.is_system(), "无名称不得注册");
     }
 
-    /// 单选组重复渲染：1 父号 + 3 子号，不重号不增长。
+    /// 单选组重复绘制：一个父编号加三个子编号，不重复不增长。
     /// Radio group: one parent, three dotted children, stable across frames.
     #[test]
     fn radio_group_registers_parent_and_children() {
@@ -969,7 +969,7 @@ mod tests {
         }
     }
 
-    /// 命名标签登记入表（kind=label），匿名标签保持免登记。
+    /// 命名的标签登记为 label 类型，未命名的标签不登记。
     /// Named labels register as kind label; anonymous ones stay untracked.
     #[test]
     fn named_label_registers_anonymous_does_not() {
@@ -984,7 +984,7 @@ mod tests {
         let named = records
             .iter()
             .find(|record| record.name == "case_named_section_label");
-        assert!(named.is_some(), "命名标签应入表");
+        assert!(named.is_some(), "命名标签应当登记");
         assert_eq!(named.unwrap().kind, DMIWidgetKind::Label);
         let anonymous = records
             .iter()
@@ -993,7 +993,7 @@ mod tests {
         assert_eq!(anonymous, 0, "匿名标签不得登记");
     }
 
-    /// DMIUpdate 是可复制、可比对的纯数据记录（编译期即排除 Response 泄漏）。
+    /// DMIUpdate 可复制、可比较，只包含数据，不会携带 Response。
     /// DMIUpdate is copyable comparable pure data, proven at compile time.
     #[test]
     fn dmi_update_is_pure_data() {

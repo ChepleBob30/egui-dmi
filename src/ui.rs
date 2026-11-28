@@ -1,11 +1,11 @@
-//! UI 封装模块根：设计语言层、组件层与编号注册表的统一出口。
+//! 界面层总入口：导出设计参数、组件与编号注册表。
 //! UI module root: exports design language, components and the id registry.
 
 pub mod components;
 pub mod design;
 pub mod id;
 
-/// 组件触及方式：注册期随功能名声明，Access 阶段据此驱动组件。
+/// 组件的触及方式，登记时随功能名一起声明。
 /// Widget touch entry: declared per capability at registration, driven by Access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UIEntry {
@@ -25,7 +25,7 @@ pub enum UIEntry {
     Focus,
     /// 聚焦后按键激活（如空格勾选、方向键步进）。 / Key press while focused.
     PressKey(egui::Key),
-    /// 根组件 parent 占位：无上级、直接可见；禁止出现在功能列表。
+    /// 根组件专用，表示没有上级，不允许出现在功能列表里。
     /// Root placeholder in parent tuples; never valid inside a capability.
     Direct,
 }

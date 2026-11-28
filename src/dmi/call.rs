@@ -1,5 +1,5 @@
-//! 接口总调用区：命令契约、解析、分层应答构造与分发器。
-//! Dispatcher area: command contract, parsing, tiered responses, routing.
+//! 命令的统一接收与转发：解析命令、构造应答、按接口名调用实现。
+//! Unified command intake: contract types, parsing, tiered responses, calling.
 
 use crate::dmi::interface;
 use crate::ui::id::DMIId;
@@ -34,7 +34,7 @@ impl DMIRequestType {
     }
 }
 
-/// 返回值细节档位：simple < standard < complex，有序可比。
+/// 返回内容的详细等级，从简单到完整，等级可以比较高低。
 /// Detail tiers of responses, ordered from low to high.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DMIComplexity {
@@ -47,7 +47,7 @@ pub enum DMIComplexity {
 }
 
 impl DMIComplexity {
-    /// 按小写名称解析档位，未知返回 None。
+    /// 按小写名称解析详细等级，未知值返回 None。
     /// Parse the lowercase tier name; None when unknown.
     fn parse(text: &str) -> Option<Self> {
         match text {
@@ -69,7 +69,7 @@ pub struct DMICommand {
     pub interface: String,
     /// 目标组件编号（系统接口为 0 号）。 / Target widget id (zero for system).
     pub target_id: DMIId,
-    /// 返回值细节档位。 / Requested detail tier.
+    /// 返回内容的详细等级。 / Requested detail tier.
     pub complexity: DMIComplexity,
 }
 
@@ -228,12 +228,12 @@ pub fn fail_response(failure: &DMIFailure, complexity: DMIComplexity) -> String 
 }
 
 // ============================================================================
-// 分发器 Dispatcher
+// 命令的统一接收与转发 Unified entry
 // ============================================================================
 
 /// DMI 统一调用入口：接收完整 JSON 字符串，返回应答 JSON 字符串。
 /// The single DMI entry point: full JSON command in, JSON response out.
-/// 命令本身解析失败时无法得知请求档位，统一按 standard 兜底输出。
+/// 命令解析失败时无从得知请求等级，统一按 standard 等级返回。
 /// Unparsable commands fall back to the standard tier for readability.
 pub fn call_dmi(command: &str) -> String {
     let parsed = match parse_command(command) {
@@ -258,7 +258,7 @@ mod tests {
         )
     }
 
-    /// greet 三档成功应答逐字段与键序对齐计划示例。
+    /// greet 三个等级的成功应答逐字段与计划示例一致。
     /// The three success tiers match the planned examples exactly.
     #[test]
     fn greet_tiers_match_planned_examples() {
@@ -280,7 +280,7 @@ mod tests {
     /// Failure tiering truncates fields exactly as the plan prescribes.
     #[test]
     fn failure_tiers_are_truncated_by_complexity() {
-        // simple 截断只适用于可解析命令；缺字段命令走 standard 兜底档。
+        // 只有能解析的命令才逐级增加字段；解析失败统一按 standard。
         // Simple truncation applies to parsed commands only.
         let unknown_simple = "{\"request_type\":\"OBSERVATION\",\"interface\":\"unknown_one\",\"target_id\":0,\"complexity\":\"simple\"}";
         assert_eq!(call_dmi(unknown_simple), "{\"result\":\"FAILED\"}");
@@ -295,8 +295,8 @@ mod tests {
         assert!(response.starts_with("{\"result\":\"FAILED\""), "result 必须首位");
     }
 
-    /// 非法输入逐一命中专属错误码，解析失败兜底 standard 档。
-    /// Invalid inputs hit dedicated codes with the standard-tier fallback.
+    /// 非法输入返回各自的错误码，解析失败统一按 standard 返回。
+    /// Invalid inputs return dedicated codes, defaulting to the standard tier.
     #[test]
     fn invalid_inputs_map_to_dedicated_codes() {
         let broken = call_dmi("{not json");

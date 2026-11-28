@@ -11,7 +11,7 @@ use serde_json::{Value, Map};
 
 /// greet 的 OBSERVATION 实现：系统级欢迎与自检信息，target_id 固定 0 号。
 /// greet handler: system-level hello and self-check info on target id zero.
-/// 校验顺序：请求类型必须 OBSERVATION，目标必须系统 0 号，再按档位组装。
+/// 先检查请求类型和目标编号，再按详细等级组装返回内容。
 /// Checks the request kind and target first, then assembles by tier.
 pub fn greet(command: &DMICommand) -> String {
     if command.request_type != DMIRequestType::Observation {
@@ -57,10 +57,10 @@ fn function_json(function: &[(String, Vec<UIEntry>)]) -> Value {
     Value::Object(object)
 }
 
-/// check_widget_status 的 OBSERVATION 实现：三档返回组件现场信息。
+/// 读取组件当前状态的接口，按三个详细等级返回不同内容。
 /// Observation handler for check_widget_status, three detail tiers.
-/// 校验顺序：请求类型 → 注册表命中 → 快照命中（防御分支复用 TARGET_ID_INVALID）。
-/// Checks request kind, then registry membership, then observation snapshot.
+/// 依次检查请求类型、注册表记录、状态记录，缺失都返回 TARGET_ID_INVALID。
+/// Checks request kind, registry record, then the stored widget state.
 pub fn check_widget_status(command: &DMICommand) -> String {
     if command.request_type != DMIRequestType::Observation {
         return fail_response(&REQUEST_TYPE_UNSUPPORTED, command.complexity);

@@ -1,11 +1,11 @@
-//! 设计语言：集中定义颜色与间距令牌，并提供写入 egui 全局样式的入口。
-//! Design language: color/spacing tokens plus the egui global style installer.
+//! 设计参数：集中定义颜色与间距，并提供写入 egui 全局样式的入口。
+//! Design parameters: colors and spacing, installed into the egui global style.
 
 use egui::style::{WidgetVisuals, Widgets};
 use egui::{Color32, Context, CornerRadius, Stroke, Style, Theme, Ui, Visuals, vec2};
 
 // ============================================================================
-// 颜色令牌 Colors
+// 颜色参数 Colors
 // ============================================================================
 
 /// DMI 统一管理的基础调色板，字段即颜色修改范围。
@@ -63,17 +63,17 @@ impl ColorLanguages {
         }
     }
 
-    /// 基础色叠加强调色后的悬停态混色。 / Hover mix: base tinted with accent.
+    /// 把基础色向强调色混合，得到悬停时的颜色。 / Hover mix: base tinted with accent.
     pub fn hover_of(&self, base: Color32) -> Color32 {
         base.lerp_to_gamma(self.accent, 0.12)
     }
 
-    /// 基础色叠加强调色后的按下态混色。 / Pressed mix: base tinted deeper.
+    /// 把基础色向强调色加深混合，得到按下时的颜色。 / Pressed mix: base tinted deeper.
     pub fn pressed_of(&self, base: Color32) -> Color32 {
         base.lerp_to_gamma(self.accent, 0.24)
     }
 
-    /// 禁用态混色：向表面色靠拢淡化。 / Disabled mix: faded toward surface.
+    /// 把颜色向表面色混合淡化，得到禁用时的颜色。 / Disabled mix: faded toward surface.
     pub fn disabled_of(&self, base: Color32) -> Color32 {
         base.lerp_to_gamma(self.surface, 0.55)
     }
@@ -85,11 +85,11 @@ impl ColorLanguages {
 }
 
 // ============================================================================
-// 间距令牌 Spacing
+// 间距参数 Spacing
 // ============================================================================
 
-/// 间距/圆角/尺寸令牌，统一控件布局与外观参数。
-/// Spacing, radius and size tokens unifying widget layout.
+/// 间距、圆角与尺寸参数，统一控件的布局和外观。
+/// Spacing, radius and size parameters unifying widget layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpacingTokens {
     /// 控件横向内边距。 / Horizontal padding inside widgets.
@@ -115,7 +115,7 @@ pub struct SpacingTokens {
 }
 
 impl SpacingTokens {
-    /// 深浅两主题共用的默认间距。 / Default spacing shared by both themes.
+    /// 深色和浅色外观模式共用的默认间距。 / Default spacing shared by both themes.
     pub const DEFAULT: Self = Self {
         pad_horizontal: 12.0,
         pad_vertical: 6.0,
@@ -134,7 +134,7 @@ impl SpacingTokens {
         CornerRadius::same(radius.round() as u8)
     }
 
-    /// 把间距令牌写入 egui 样式的全局间距。 / Write spacing tokens into egui style.
+    /// 把间距参数写入 egui 样式的全局间距字段。 / Write spacing parameters into the egui style.
     pub fn apply(&self, style: &mut Style) {
         style.spacing.button_padding = vec2(self.pad_horizontal, self.pad_vertical);
         style.spacing.interact_size = vec2(self.control_height, self.control_height);
@@ -148,20 +148,20 @@ impl SpacingTokens {
 // 设计语言聚合 Design languages
 // ============================================================================
 
-/// 一个主题的完整设计语言（DMI 修改范围的总入口）。
+/// 一个外观模式的完整设计参数，DMI 修改范围的入口。
 /// Full design language of a theme; the entry of the DMI scope.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DesignLanguages {
-    /// 归属主题（深/浅）。 / Owning theme (dark or light).
+    /// 所属外观模式（深色或浅色）。 / Owning theme (dark or light).
     pub theme: Theme,
-    /// 颜色令牌。 / Color tokens.
+    /// 颜色参数。 / Color parameters.
     pub colors: ColorLanguages,
-    /// 间距令牌。 / Spacing tokens.
+    /// 间距参数。 / Spacing parameters.
     pub spacing: SpacingTokens,
 }
 
 impl DesignLanguages {
-    /// 深色主题的设计语言。 / Design language of dark theme.
+    /// 深色外观模式的设计参数。 / Design language of dark theme.
     pub fn dark() -> Self {
         Self {
             theme: Theme::Dark,
@@ -170,7 +170,7 @@ impl DesignLanguages {
         }
     }
 
-    /// 浅色主题的设计语言。 / Design language of light theme.
+    /// 浅色外观模式的设计参数。 / Design language of light theme.
     pub fn light() -> Self {
         Self {
             theme: Theme::Light,
@@ -179,7 +179,7 @@ impl DesignLanguages {
         }
     }
 
-    /// 按主题取设计语言。 / Design language of a given theme.
+    /// 按外观模式取对应的设计参数。 / Design language of a given theme.
     pub fn for_theme(theme: Theme) -> Self {
         match theme {
             Theme::Dark => Self::dark(),
@@ -187,7 +187,7 @@ impl DesignLanguages {
         }
     }
 
-    /// 由当前 UI 视觉反推主题设计语言。 / Derive tokens from current UI visuals.
+    /// 根据当前界面样式判断外观模式并取出设计参数。 / Read the design parameters from the current UI style.
     pub fn from_ui(ui: &Ui) -> Self {
         if ui.visuals().dark_mode {
             Self::dark()
@@ -196,7 +196,7 @@ impl DesignLanguages {
         }
     }
 
-    /// 组装单一控件状态视觉（五档复用）。
+    /// 按一种状态生成控件外观，五种状态共用此方法。
     /// Assembles widget visuals for one state, reused across states.
     fn state_visuals(&self, background: Color32, foreground: Color32) -> WidgetVisuals {
         WidgetVisuals {
@@ -209,8 +209,8 @@ impl DesignLanguages {
         }
     }
 
-    /// 由颜色令牌生成 egui 五档控件状态视觉。
-    /// Builds egui's five widget-state visuals from color tokens.
+    /// 根据颜色参数生成 egui 的五种控件状态外观。
+    /// Builds egui's five widget-state looks from the color parameters.
     fn build_widgets(&self) -> Widgets {
         let colors = self.colors;
         let surface = colors.surface;
@@ -223,8 +223,8 @@ impl DesignLanguages {
         }
     }
 
-    /// 由颜色令牌生成 egui 全局视觉配置。
-    /// Builds egui Visuals (backgrounds, selection, radii) from tokens.
+    /// 根据颜色参数生成 egui 的全局外观配置。
+    /// Builds egui Visuals (backgrounds, selection, radii) from the color parameters.
     fn build_visuals(&self) -> Visuals {
         let colors = self.colors;
         let mut visuals = self.theme.default_visuals();
@@ -255,15 +255,15 @@ impl DesignLanguages {
         visuals
     }
 
-    /// 把设计语言令牌写入一份 egui 样式。
-    /// Writes design tokens into an egui style instance.
+    /// 把全部设计参数写入一份 egui 样式。
+    /// Writes all design parameters into an egui style instance.
     pub fn apply(&self, style: &mut Style) {
         self.spacing.apply(style);
         style.visuals = self.build_visuals();
     }
 
-    /// 装配入口：把深浅两套设计语言样式写入上下文。
-    /// Installer: applies both dark and light token styles to the context.
+    /// 安装入口：把深色和浅色两套样式写入 egui 上下文。
+    /// Installer: applies both dark and light style sets to the context.
     pub fn install(ctx: &Context) {
         for theme in [Theme::Dark, Theme::Light] {
             let languages = Self::for_theme(theme);
@@ -276,7 +276,7 @@ impl DesignLanguages {
 mod tests {
     use super::*;
 
-    /// 验证安装后深浅样式由设计语言接管。
+    /// 验证安装后深色和浅色样式都由设计参数接管。
     /// Verifies both themes' styles are taken over after install.
     #[test]
     fn install_writes_both_themes() {

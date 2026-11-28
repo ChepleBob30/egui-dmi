@@ -2,81 +2,114 @@
 
 ## 摘要
 
-- 本文档用树形图说明`egui-dmi`项目组成以及各文件功能。
-- 本项目是面向大模型工作的测试项目，结构从简：每个功能层一个文件，一切为测试服务。
-- 开发规范见`build_docs/restricts.md`；任务细则见`build_docs/plan/`。
+- 本文档用树形图说明 `egui-dmi` 项目的组成，以及每个文件的功能。
+- 本项目是面向大模型工作的测试项目，结构从简，每个功能层尽量放在一个文件里。
+- 开发规范见 `build_docs/restricts.md`，各功能的任务细则见 `build_docs/plan/` 目录。
 
 ## 结构图
 
 ```text
 egui-dmi/
-├── Cargo.toml                     # 包清单：库名 egui_dmi，edition 2024，workspace 含 demo；依赖 egui 0.37、serde_json。
+├── Cargo.toml                     # 包清单：库名为 egui_dmi，Rust 版本 2024，
+│                                  #   工作区包含 demo 示例，依赖 egui 0.37 与 serde_json。
 ├── src/
-│   ├── lib.rs                     # 项目简介与模块挂载入口。
-│   ├── ui.rs                      # UI 模块根：UIEntry 触及方式枚举 + design/components/id 公共 API 出口。
+│   ├── lib.rs                     # 项目简介，以及各顶层模块的挂载位置。
+│   ├── ui.rs                      # 界面层的总入口：定义 UIEntry（组件的触及方式枚举），
+│   │                              #   并对外导出 design、components、id 三个子模块的公共接口。
 │   ├── ui/
-│   │   ├── id.rs                  # 组件ID注册表：DMIId 主号+小数路径（4层上限）、名称唯一键、function 仅此层承载、
-│   │   │                          #   DMIRecord 五元组（parent 元组 + function 功能映射）、list_id() Arc 快照。
-│   │   ├── design.rs              # 设计语言（单文件）：
-│   │   │                          #   ColorLanguages 深/浅调色板 + hover/press/disabled/选中混色规则；
-│   │   │                          #   SpacingTokens 内边距/圆角/控件尺寸令牌；
-│   │   │                          #   DesignLanguages 聚合 + apply/install 写入 egui 全局样式（深浅两套）。
-│   │   └── components.rs          # DMI 组件（单文件）：七组件以 dmi_name 过登记门（无名不注册），不持有 function；
-│   │                              #   show() 尾部向 dmi/observe 推送现场快照（文本/勾选/数值/矩形）；
-│   │                              #   DMIUpdate 为纯数据 {id, clicked, changed}（Response 不出 show）；
-│   │                              #   DMIButton(primary/destructive/text…)自绘四态着色；
-│   │                              #   DMISelect 扁平 individual_ids 子号 / grouped 分组三层号；
-│   │                              #   DMIRadio group() 统一父号+小数子号；
-│   │                              #   DMILabel / DMITextInput / DMICheckbox / DMISlider。
-│   ├── dmi.rs                   # DMI 模块根：声明 call/interface 两区并再导出公开契约。
+│   │   ├── id.rs                  # 组件编号注册表：
+│   │   │                          #   DMIId 编号（主号加小数路径，最多 4 层，0 号留给系统）；
+│   │   │                          #   以名称为唯一身份键的复用表；
+│   │   │                          #   DMIRecord 条目（含上级编号与触及方式、功能映射）；
+│   │   │                          #   list_id() 返回全部条目的只读副本。
+│   │   ├── design.rs              # 设计参数定义（单文件）：
+│   │   │                          #   ColorLanguages 深色与浅色两套调色板，
+│   │   │                          #     以及悬停、按下、禁用、选中四种状态的配色规则；
+│   │   │                          #   SpacingTokens 内边距、圆角半径、控件尺寸参数；
+│   │   │                          #   DesignLanguages 负责把以上参数一次性写入 egui 的全局样式，
+│   │   │                          #     深色和浅色两种外观模式各写一套。
+│   │   └── components.rs          # 七种封装组件（单文件）：
+│   │                              #   组件通过 dmi_name 方法声明注册名称，未声明名称的组件不注册；
+│   │                              #   show() 结束时把组件当前状态写入 dmi/observe.rs 的记录表；
+│   │                              #   DMIUpdate 是纯数据返回值 {id, clicked, changed}，
+│   │                              #     egui 的 Response 不会传出 show()；
+│   │                              #   DMIButton 自行绘制，支持主要、次要、危险、文字四种样式；
+│   │                              #   DMISelect 支持选项独立编号与分组下拉（三层编号）；
+│   │                              #   DMIRadio 支持编入单选组（统一父编号加小数子编号）；
+│   │                              #   DMILabel、DMITextInput、DMICheckbox、DMISlider。
+│   ├── dmi.rs                     # DMI 层的总入口：声明各子模块，并对外导出公共接口。
 │   └── dmi/
-│       ├── call.rs              # 接口总调用区：DMICommand/DMIRequestType/DMIComplexity/DMIFailure 契约，
-│       │                        #   parse_command 解析、ok_response/fail_response 分层应答、call_dmi 分发器。
-│       ├── interface.rs         # 各接口具体实现区：greet 示例接口（OBSERVATION 三档应答）。
-│       ├── console.rs           # 运行时控制台：stdin 独立线程 + 帧尾 pump 当帧执行；
-│       │                        #   串行在途、每命令回执通道、10 秒 CONSOLE_TIMEOUT 兜底。
-│       └── observe.rs           # 观察快照表：组件每帧推送 basics/flags/rect/visible，
-│                                #   读取类接口（check_widget_status）的数据源；SYSTEM 拒收。
+│       ├── call.rs                # 命令的统一接收与转发：
+│       │                          #   DMICommand 等命令契约类型；命令字符串的解析与校验；
+│       │                          #   按 simple、standard、complex 三个详细等级构造应答；
+│       │                          #   公开入口 call_dmi 函数（接收完整 JSON 命令字符串，
+│       │                          #     按 interface 字段转发给对应的接口实现函数）。
+│       ├── interface.rs           # 各接口的具体实现：greet（自检问候）与
+│       │                          #   check_widget_status（读取组件当前状态）。
+│       ├── console.rs             # 运行时控制台：独立线程从终端读取一行一条的 JSON 命令，
+│       │                          #   界面在每帧绘制结束时执行 pump 完成命令并送回结果；
+│       │                          #   同一时间只处理一条命令；每条命令有专属的返回通道
+│       │                          #     （为它单独创建的 mpsc 发送端与接收端）；
+│       │                          #   超过 10 秒没有结果时返回 CONSOLE_TIMEOUT。
+│       └── observe.rs             # 组件状态记录表：组件每帧绘制时把类型专属信息、
+│                                  #   交互状态、位置矩形和可见性写入此表；
+│                                  #   读取类接口 check_widget_status 从这里取数据；
+│                                  #   未注册组件（编号为 SYSTEM）的写入会被拒绝。
 ├── demo/
-│   └── dmi_gallery/               # eframe 组件画廊示例（workspace 成员，cargo run -p dmi-gallery）。
-│       ├── Cargo.toml             # 依赖：eframe 0.37 + path 依赖 egui-dmi。
-│       └── src/main.rs            # GalleryApp：七组件实测 + list_id() 注册表面板 + 交互日志 + 主题切换
-│                                  #   + DMI 调用测试台（三下拉选接口/类型/档位 + 调用按钮）
-│                                  #   + 运行时控制台接线（spawn + 帧尾 pump）。
+│   └── dmi_gallery/               # 组件画廊示例程序（Cargo 工作区成员，
+│                                  #   运行命令：cargo run -p dmi-gallery）。
+│       ├── Cargo.toml             # 示例程序依赖：eframe 0.37 和本库（按路径引用）。
+│       └── src/main.rs            # GalleryApp：七种组件的完整演示；编号注册表的实时面板；
+│                                  #   交互日志；深色与浅色外观切换；DMI 调用测试台
+│                                  #   （三个下拉框选择接口、请求类型、详细等级，
+│                                  #     一个按钮执行调用并显示返回内容）；
+│                                  #   启动并接入运行时控制台（spawn 与每帧结束时 pump）。
 ├── docs/
-│   ├── design-system.md           # 设计语言与组件视觉规范说明。
-│   └── id-system.md               # DMI 组件ID分配系统：运作流程、reuse 机制逐方法设计理由、边界与演进。
+│   ├── design-system.md           # 设计参数与组件外观规范的说明文档。
+│   └── id-system.md               # 组件编号分配机制的说明文档（编号规则、复用逻辑、边界情况）。
 └── build_docs/
-    ├── restricts.md               # 开发规范（命名/注释/任务流程等约束）。
+    ├── restricts.md               # 开发规范（命名、注释、任务流程等约束）。
     ├── structure.md               # 本文件：项目结构与各文件功能说明。
-    ├── plan/                      # 各功能实现说明文档（ui_sort.md 等）。
-    └── changelog/                 # 人类可读改动日志，每任务一文件。
+    ├── plan/                      # 各功能的任务细则文档（如 ui_sort.md、dmi.md）。
+    ├── blueprint/                 # 开工前撰写并经用户批准的实现蓝图。
+    └── changelog/                 # 人类可读的改动日志，每个任务一个文件。
 ```
 
 ## 变更记录说明
 
-- 2026-11-24：DMI Phase 4 落地——`observe.rs` 观察快照 + `check_widget_status` 三档接口；
-  组件 show() 推送快照；demo 自检四按钮移除、改为三下拉+调用按钮测试台；
-  控制台 pump 移至帧尾消除启动竞态。
-- 2026-11-23：DMI Phase 3 落地——`dmi/console.rs` 运行时控制台（终端 JSON 行、
-  独立线程、帧首 pump 当帧执行、串行在途、10 秒超时），demo 接线 spawn+pump。
-- 2026-11-22：UI 触及方法改进落地——`UIEntry` 枚举、`DMIRecord` 五元组（parent 元组 +
-  function 功能映射）、严格声明制（匿名机制删除，缺一不注册）、demo 全量补齐声明。
-- 2026-11-22：DMI Phase 2 落地——`call_dmi` 统一调用入口 + `greet` 示例接口（硬编码调用）；
-  `DMIUpdate` 纯数据化去 Response；demo 新增"DMI 自检"分区；依赖新增 serde_json。
-- 2026-11-22：`DMISelect` 新增 `grouped` 分组下拉（组=父号.n，选项=父号.n.m），
-  demo"场景预设"落地首个三层编号实例；详见 changelog/2026-11-22-grouped-select-multilevel.md。
-- 2026-11-22：`DMIId` 升级为"主号+小数路径"（上限 4 层，`is_root/level/child→Option`），
-  `allocate_child` 增加深度守卫；编号机制支持子组件嵌套（A 方案，实例待容器组件落地）。
-- 2026-11-14：`DMIRadio` 新增 `.group()` 统一父号+小数子号（补 dmi.md 单选框编号规则）；
-  demo 章节标题命名入表；详见 changelog/2026-11-14-demo-three-findings.md。
-- 2026-11-14：新增 `docs/id-system.md`（ID 分配系统与 reuse 机制说明文档）。
-- 2026-11-14：性能修复——匿名标签不登记切断注册表自增长循环；id 复用键命名化防漂移重号；
-  注册表加版本号+Arc 快照，demo 面板按版本门控重建（详见 changelog/2026-11-14-performance-fix.md）。
-- 2026-11-14：新增 `demo/dmi_gallery`（eframe 画廊，根 Cargo.toml 加 workspace）；
-  组件 `#[must_use]` 由 DMIUpdate 结构体移至六个交互组件 show()。
-- 2026-11-14：新增 `src/ui/id.rs`（DMI 任务1.2：组件ID注册表），`DMIUpdate` 加 `id` 字段，
-  组件接入 `.dmi_name()/.individual_ids()`；复用键=(egui id,名称)，命名不同即另发新号。
-- 2026-11-10：`src/ui/design/` 六个令牌子文件合并为单文件 `design.rs`；
-  移除 motion/typography/accessibility 令牌，`SpacingTokens` 删除全部 `gap_*` 字段；
-  同日新增 `components.rs`，七个基础组件构建方法一次性就位。
+- 2026-11-24：DMI 第四阶段完成。新增 `src/dmi/observe.rs` 组件状态记录表和
+  `check_widget_status` 读取接口（按三个详细等级返回不同内容）；
+  七种组件在每帧绘制结束时写入自己的状态记录；
+  demo 的接口测试区从四个固定按钮改为三个下拉框加一个调用按钮，
+  并按组件名称实时查找目标编号；
+  控制台命令的处理时机从每帧绘制开始移到每帧绘制结束，
+  解决了程序刚启动时注册表尚未建立就被查询的时序问题。
+- 2026-11-23：DMI 第三阶段完成。新增 `src/dmi/console.rs` 运行时控制台：
+  独立线程读取终端的 JSON 行命令，界面每帧处理一次，同一时间只处理一条命令，
+  超过 10 秒没有结果时返回超时错误；demo 启动并接入了控制台。
+- 2026-11-22：界面触及方式改进完成。新增 `UIEntry` 枚举；
+  `DMIRecord` 增加上级触及方式与功能映射两个字段；
+  注册改为严格声明制：匿名组件不再注册，功能映射只保存在编号注册表这一层。
+- 2026-11-22：DMI 第二阶段完成。新增 `call_dmi` 统一调用入口和 `greet` 示例接口
+  （硬编码调用，即把命令直接写进程序代码里执行）；
+  `DMIUpdate` 改为纯数据记录，不再携带 egui 的 Response；
+  demo 新增接口自检分区；依赖新增 serde_json。
+- 2026-11-22：`DMISelect` 新增分组下拉 `grouped`：分组得到父编号下的子编号，
+  分组内的选项得到第三层编号；demo 的"场景预设"成为第一个三层编号的实际用例。
+- 2026-11-22：`DMIId` 从固定两段改为"主号加小数路径"，最多 4 层；
+  `allocate_child` 在超出层数时明确拒绝；编号机制从此支持子组件继续包含子组件。
+- 2026-11-14：`DMIRadio` 新增 `.group()` 方法：同组单选框共用一个整数父编号，
+  每个成员获得小数子编号，补全了计划文档对单选框组编号规则的要求；
+  demo 的章节标题通过显式命名进入了编号注册表。
+- 2026-11-14：新增 `docs/id-system.md`，说明编号分配机制与复用逻辑。
+- 2026-11-14：性能修复。未命名的标签不再注册，切断了注册表自我膨胀的循环；
+  复用判断改为只看名称，界面布局变化不再造成重复编号；
+  注册表增加版本号和只读副本，demo 的注册表面板只在版本号变化时才重建显示内容。
+- 2026-11-14：新增 `demo/dmi_gallery` 组件画廊（根 `Cargo.toml` 增加工作区配置）；
+  `#[must_use]` 标注从 `DMIUpdate` 结构体移到六个交互组件的 `show()` 方法上。
+- 2026-11-14：新增 `src/ui/id.rs` 组件编号注册表（计划文档 1.2 节）；
+  `DMIUpdate` 增加 `id` 字段；组件接入 `.dmi_name()` 与 `.individual_ids()`；
+  复用判断依据为"名称相同则复用，名称不同则另行分配新编号"。
+- 2026-11-10：`src/ui/design/` 目录下的六个参数文件合并为单文件 `design.rs`；
+  删除动画、字体、可访问性三组参数，`SpacingTokens` 删除全部 `gap_` 开头的字段；
+  同日新增 `components.rs`，七个基础组件的构建方法一次性完成。

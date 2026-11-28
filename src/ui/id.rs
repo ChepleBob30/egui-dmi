@@ -1,5 +1,5 @@
-//! 组件ID注册表：DMI 编号分配、定位映射与修订快照（零帧重复入表）。
-//! Id registry: DMI numbering, locating map, revision-stamped snapshots.
+//! 组件编号注册表：分配编号、记录位置、支持查询，重复登记不重复写入。
+//! Id registry: assigns ids, records widget locations, supports queries.
 
 use crate::ui::UIEntry;
 use egui::Id;
@@ -136,7 +136,7 @@ pub struct DMIRecord {
     pub parent: (DMIId, UIEntry),
     /// 组件名称（注册强制显式声明，无自动名）。 / Explicit name; no auto names.
     pub name: String,
-    /// 功能映射：功能名 → 实现它的触及方式列表（首声明入表）。
+    /// 功能映射：功能名对应触及方式列表，以第一次登记写入的为准。
     /// Capability map: name to realizing entries, stored at first declaration.
     pub function: Vec<(String, Vec<UIEntry>)>,
 }
@@ -164,25 +164,25 @@ impl std::fmt::Display for DMIRecord {
 // 持久注册表 Persistent registry
 // ============================================================================
 
-/// 进程内持久注册表：条目、复用映射、定位表与修订快照。
-/// Process-lifetime registry: records, reuse map, locating, revision snapshot.
+/// 进程内长期保存的注册表：条目、名称对应表、位置表、版本与副本。
+/// Process-lifetime registry: records, name map, location map, revision, copy.
 struct DMIRegistry {
     /// 全部条目，按分配顺序。 / All records in allocation order.
     records: Vec<DMIRecord>,
     /// 名称 → DMI 编号（名称是唯一身份键，严格声明制）。
     /// Name to DMI id; the name is the only identity key.
     reused: HashMap<String, DMIId>,
-    /// DMI 编号 → 最近一次调用的 egui id（定位通道，每帧更新但不入表）。
+    /// 编号到最近一次 egui 身份的对应表，每次登记都会更新。
     /// DMI id to last seen egui id; refreshed per call without table growth.
     located: HashMap<DMIId, Id>,
-    /// 主编号发号器（从 1 起，0 已预留）。 / Major allocator starting at one.
+    /// 下一个可用的主编号，从 1 开始，0 已留给系统。 / Major allocator starting at one.
     next_major: u32,
     /// 父号 → 已分配子号计数。 / Parent to issued child counter.
     minor_counters: HashMap<DMIId, u32>,
-    /// 条目版本号：仅入表时递增。 / Revision counter, bumped only on push.
+    /// 条目版本号：只有新增条目时才增加。 / Revision counter, bumped only on push.
     revision: u64,
-    /// 条目共享快照：入表时重建，读取零拷贝。
-    /// Shared snapshot, rebuilt on push; reads are one Arc clone.
+    /// 条目列表的只读副本：新增条目时重建，读取时不复制内容。
+    /// Read-only record copy; rebuilt on insert, read without copying.
     snapshot: Arc<Vec<DMIRecord>>,
 }
 
@@ -226,8 +226,8 @@ impl DMIRegistry {
         name: &str,
         function: &[(&str, &[UIEntry])],
     ) -> DMIId {
-        // 严格声明制：名称与功能映射缺一即拒绝，返回 SYSTEM 不入表。
-        // Strict gate: missing name or function map is refused outright.
+        // 名称为空或功能映射不合法时拒绝登记，直接返回 SYSTEM。
+        // Missing name or invalid function map means the registration is refused.
         if name.is_empty() || !valid_function(function) {
             return DMIId::SYSTEM;
         }
@@ -265,7 +265,7 @@ impl DMIRegistry {
         function: &[(&str, &[UIEntry])],
     ) -> DMIId {
         // 子项同样受严格声明制约束；touch 为 Direct 或父号未登记均拒绝。
-        // Children share the strict gate; Direct touch or unknown parent fails.
+        // Children use the same checks; Direct touch or unknown parent is refused.
         if name.is_empty() || touch == UIEntry::Direct || !valid_function(function) {
             return DMIId::SYSTEM;
         }
@@ -278,7 +278,7 @@ impl DMIRegistry {
         }
         let counter = self.minor_counters.entry(parent).or_insert(0);
         *counter += 1;
-        // 深度上限防御：第 5 层请求显式拒绝，不发号、不入表。
+        // 达到层数上限的请求被拒绝：不分配编号，也不写入条目。
         // Depth guard: a fifth-level request is refused, nothing registered.
         let Some(new_id) = parent.child(*counter) else {
             debug_assert!(false, "DMI child id exceeds DMI_MAX_DEPTH");
@@ -299,8 +299,8 @@ impl DMIRegistry {
         new_id
     }
 
-    /// 入表：追加条目并重建快照、递增版本号。
-    /// Pushes a record, rebuilding the shared snapshot and revision.
+    /// 写入新条目：追加记录，更新只读副本，版本号加一。
+    /// Inserts a record, refreshing the read-only copy and the revision.
     fn push_record(&mut self, record: DMIRecord) {
         self.records.push(record);
         self.revision += 1;
@@ -308,10 +308,10 @@ impl DMIRegistry {
     }
 }
 
-/// 全局注册表句柄。 / Global registry handle.
+/// 全局唯一的注册表。 / Global registry handle.
 static REGISTRY: OnceLock<Mutex<DMIRegistry>> = OnceLock::new();
 
-/// 加锁访问注册表；中毒锁取回内部数据继续。
+/// 加锁访问注册表；线程崩溃后仍取回数据继续使用。
 /// Locks the registry; recovers data from a poisoned lock.
 fn with_registry<R>(action: impl FnOnce(&mut DMIRegistry) -> R) -> R {
     let registry = REGISTRY.get_or_init(Mutex::default);
@@ -356,7 +356,7 @@ pub fn name_of(dmi_id: DMIId) -> Option<String> {
     })
 }
 
-/// 按编号取最近一次调用的 egui id（DMI 定位通道）。
+/// 按编号查询最近一次出现的 egui 身份。
 /// Latest egui id seen for this DMI id, the locating channel.
 pub fn locate(dmi_id: DMIId) -> Option<Id> {
     with_registry(|registry| registry.located.get(&dmi_id).copied())
@@ -368,8 +368,8 @@ pub fn registry_revision() -> u64 {
     with_registry(|registry| registry.revision)
 }
 
-/// 查看当前全部编号分配：Arc 快照，读取零拷贝。
-/// Snapshot of all id assignments; Arc clone, zero copy.
+/// 查看全部条目：返回共享的只读副本，读取不复制内容。
+/// Returns all records as a shared read-only copy, without duplicating.
 pub fn list_id() -> Arc<Vec<DMIRecord>> {
     with_registry(|registry| Arc::clone(&registry.snapshot))
 }
@@ -391,13 +391,13 @@ mod tests {
     const TWO_CAPS: [(&str, &[UIEntry]); 2] =
         [("save", &[UIEntry::LeftClick]), ("hover", &[UIEntry::Hover])];
 
-    /// 同 egui id 不同命名 ⇒ 两个编号；命名相同 ⇒ 跨漂移复用不重号。
+    /// 同一 egui 身份不同名称得到两个编号；名称相同永远复用。
     /// Different names get ids; same name reuses even with drifting egui id.
     #[test]
     fn named_identity_survives_egui_drift() {
         let first = allocate(Id::NULL.with("drift_a"), DMIWidgetKind::Button, "case_drift_button", &CAP);
         let drifted = allocate(Id::NULL.with("drift_b"), DMIWidgetKind::Button, "case_drift_button", &CAP);
-        assert_eq!(first, drifted, "布局漂移后同名必须复用，不重复入表");
+        assert_eq!(first, drifted, "同名必须复用，不重复写入条目");
         assert!(!first.is_system());
         let shared_egui_id = Id::NULL.with("drift_shared");
         let red = allocate(shared_egui_id, DMIWidgetKind::Button, "case_names_red", &CAP);
@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(locate(blue), Some(shared_egui_id));
     }
 
-    /// 同名 10 次登记（含漂移 egui id）只产生 1 条。
+    /// 同名登记十次，即使 egui 身份变化也只产生一条记录。
     /// Ten same-name allocations produce exactly one record.
     #[test]
     fn repeated_allocation_does_not_grow() {
@@ -420,7 +420,7 @@ mod tests {
             );
         }
         let hits = list_id().iter().filter(|record| record.name == "case_grow_probe").count();
-        assert_eq!(hits, 1, "同名重复分配不得重复入表");
+        assert_eq!(hits, 1, "同名重复登记不得重复写入条目");
     }
 
     /// 子项编号形如 父号.1/父号.2，parent 元组带触及方式。
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn strict_rejection_matrix() {
         let _guard = test_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // 断言只统计本用例前缀，避免并行测试的全局入表干扰。
+        // 只统计本用例名称前缀，避免其他测试并行写入的干扰。
         // Counting this case's prefix keeps the assertion race-free.
         let rejected_count = || {
             list_id()
@@ -511,7 +511,7 @@ mod tests {
             &CAP
         )
         .is_system());
-        assert_eq!(rejected_count(), before, "拒绝路径不得入表");
+        assert_eq!(rejected_count(), before, "被拒绝的登记不得写入条目");
         // 空功能映射是组件登记的合法形态：有名即注册。
         // An empty function map is the normal component registration form.
         let bare = allocate(
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(rejected_count(), before + 1, "空映射注册恰好新增一条");
     }
 
-    /// 功能映射往返：入表内容与声明逐项相等，Display 内联功能表。
+    /// 写入的功能映射与声明逐项相等，显示格式包含功能表。
     /// Capability map roundtrip with the inlined display form.
     #[test]
     fn function_roundtrip_and_display() {
@@ -560,7 +560,7 @@ mod tests {
         assert!(DMIId::SYSTEM.is_system());
     }
 
-    /// 三层发号链：父 1 → 子 1.1 → 孙 1.1.1/1.1.2，parent 链与复用一致。
+    /// 三层编号链：1、1.1、1.1.1，父子对应关系与复用保持一致。
     /// Three-level chain: parent, child, grandchildren with parent links.
     #[test]
     fn grandchild_chain_allocates_under_child() {
@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(child, parent.child(1).unwrap());
         assert_eq!(first, child.child(1).unwrap(), "孙号 = 1.1.1");
         assert_eq!(second, child.child(2).unwrap(), "孙号 = 1.1.2");
-        assert_eq!(first, first_again, "孙项按名称复用，egui id 漂移无关");
+        assert_eq!(first, first_again, "子项按名称复用，与位置变化无关");
         let records = list_id();
         let first_record = records.iter().find(|record| record.id == first).unwrap();
         assert_eq!(first_record.parent, (child, UIEntry::LeftClick), "孙项 parent 指向子");
@@ -627,7 +627,7 @@ mod tests {
         assert!(deep.child(2).is_none(), "满深度必须拒绝追加");
     }
 
-    /// debug 档：超限发号按蓝图约定 panic 提示（防御性边界）。
+    /// 调试运行时，超出层数上限直接崩溃提示（防御性边界）。
     /// Debug builds panic on over-deep allocation, as the blueprint prescribes.
     #[cfg(debug_assertions)]
     #[test]
@@ -660,7 +660,7 @@ mod tests {
         );
     }
 
-    /// release 档：超限发号返回 SYSTEM 哨兵且不入表。
+    /// 发布运行时，超限请求返回 SYSTEM 占位值且不写入条目。
     /// Release builds refuse with SYSTEM and register nothing.
     #[cfg(not(debug_assertions))]
     #[test]
@@ -695,7 +695,7 @@ mod tests {
         assert!(rejected.is_system(), "超限子号必须被拒绝");
         let after =
             list_id().iter().filter(|record| record.name.starts_with("case_deep")).count();
-        assert_eq!(before, after, "拒绝路径不得入表");
+        assert_eq!(before, after, "被拒绝的登记不得写入条目");
     }
 
     /// Ord 语义：按小数路径逐段数值比较，不受数组尾部填充影响。
@@ -713,14 +713,14 @@ mod tests {
         assert!(!seen.insert(DMIId::new(1).child(2).unwrap()), "等值编号哈希一致");
     }
 
-    /// 版本号仅在真实入表时变化。 / Revision only moves on real pushes.
+    /// 版本号只在真正新增条目时增加。 / Revision only moves on real pushes.
     #[test]
     fn revision_tracks_growth() {
         let _guard = test_mutex().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let name = "case_revision_probe";
         let start = registry_revision();
         let first = allocate(Id::NULL.with("rev_a"), DMIWidgetKind::Slider, name, &CAP);
-        assert!(registry_revision() > start, "入表必须递增版本");
+        assert!(registry_revision() > start, "新增条目必须递增版本");
         let reused = allocate(Id::NULL.with("rev_b"), DMIWidgetKind::Slider, name, &CAP);
         assert_eq!(first, reused);
         let hits = list_id().iter().filter(|record| record.name == name).count();

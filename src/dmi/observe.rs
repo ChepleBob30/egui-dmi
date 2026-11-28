@@ -1,4 +1,4 @@
-//! 观察快照表：组件每帧推送渲染现场，读取类接口据此应答。
+//! 组件状态记录表：组件每帧写入当前状态，供读取接口查询。
 //! Observation store: widgets push per-frame state for read interfaces.
 
 use crate::ui::id::DMIId;
@@ -6,7 +6,7 @@ use egui::Response;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-/// 组件运行观察快照：基本信息 + 可用性 + 上下文（最近一次渲染现场）。
+/// 组件当前状态记录：基本信息、交互状态、位置、是否可见。
 /// Per-widget observation: basics, availability flags, context geometry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DMIWidgetSnapshot {
@@ -20,13 +20,13 @@ pub struct DMIWidgetSnapshot {
     pub visible: bool,
 }
 
-/// 基本信息封闭集：七组件加复合子项共八形态。
+/// 基本信息按组件类型分成八种固定形态。
 /// Closed basic-info set: seven widgets plus composite child items.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DMIBasics {
     /// 按钮：文本。 / Button with its label.
     Button { text: String },
-    /// 标签：文本与字号档位。 / Label with text tier.
+    /// 标签：文本与四种字号形式之一。 / Label with text tier.
     Label { text: String, tier: &'static str },
     /// 输入框：绑定文本、占位符、密码位。 / Field with bound text and modes.
     TextInput { text: String, placeholder: String, password: bool },
@@ -99,11 +99,11 @@ pub fn response_rect(response: &Response) -> (f32, f32, f32, f32) {
     (rect.min.x, rect.min.y, rect.width(), rect.height())
 }
 
-/// 全局快照表：键集与注册表一致（SYSTEM 编号被拒收）。
-/// Global snapshot store; system ids are refused entry.
+/// 全局状态记录表；未注册组件（SYSTEM）的写入会被拒绝。
+/// Global state-record store; system ids are refused.
 static OBSERVE_STORE: OnceLock<Mutex<HashMap<DMIId, DMIWidgetSnapshot>>> = OnceLock::new();
 
-/// 写入/覆盖一条观察快照；未注册编号（SYSTEM）静默跳过。
+/// 写入或覆盖一条状态记录；未注册的编号直接跳过。
 /// Records one observation; unregistered ids are skipped silently.
 pub fn observe(dmi_id: DMIId, snapshot: DMIWidgetSnapshot) {
     if dmi_id.is_system() {
@@ -116,7 +116,7 @@ pub fn observe(dmi_id: DMIId, snapshot: DMIWidgetSnapshot) {
     guard.insert(dmi_id, snapshot);
 }
 
-/// 读取指定编号的最近快照。 / Reads the latest snapshot for one id.
+/// 读取指定编号最近一次写入的状态记录。 / Reads the latest stored state for one id.
 pub fn snapshot_of(dmi_id: DMIId) -> Option<DMIWidgetSnapshot> {
     let store = OBSERVE_STORE.get_or_init(|| Mutex::new(HashMap::new()));
     let guard = store
@@ -133,8 +133,8 @@ mod tests {
     use crate::ui::{DMIButton, UIEntry};
     use egui::Id;
 
-    /// 快照写入读回一致，SYSTEM 编号被拒收。
-    /// Snapshot roundtrip; system ids never enter the store.
+    /// 状态记录写入后读取一致，SYSTEM 编号被拒绝写入。
+    /// State records round-trip; system ids never enter the store.
     #[test]
     fn observe_roundtrip_skips_system() {
         let probe_id = crate::ui::id::allocate(
@@ -162,7 +162,7 @@ mod tests {
         assert!(snapshot_of(DMIId::SYSTEM).is_none());
     }
 
-    /// 渲染命名按钮后三档应答逐字段正确（键序 result 首位）。
+    /// 绘制命名按钮后，三个等级的应答逐字段核对正确。
     /// Rendered widget answers all three tiers with stable key order.
     #[test]
     fn check_widget_status_tiers_after_render() {
@@ -200,7 +200,7 @@ mod tests {
         assert!(complex.contains("\"focused\""), "{complex}");
     }
 
-    /// 已注册但从未渲染的编号走防御分支 TARGET_ID_INVALID。
+    /// 只注册但从未绘制的编号，应答返回 TARGET_ID_INVALID。
     /// Registered-but-never-rendered ids hit the defensive invalid branch.
     #[test]
     fn registered_without_snapshot_is_refused() {

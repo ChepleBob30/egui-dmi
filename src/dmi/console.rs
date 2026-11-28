@@ -1,4 +1,4 @@
-//! 运行时控制台：终端 JSON 行协议与 UI 帧循环之间的桥（串行在途）。
+//! 运行时控制台：在终端输入和界面绘制循环之间传递命令。
 //! Runtime console: terminal JSON lines bridged to the UI frame loop.
 
 use crate::dmi::call::{DMIComplexity, DMIFailure, call_dmi, fail_response};
@@ -20,25 +20,25 @@ pub const CONSOLE_TIMEOUT: DMIFailure = DMIFailure {
     suggestion: "Check that the app calls DMIConsole::pump each frame.",
 };
 
-/// 共享内核：收件箱（命令 + 回执发送端）与测试可缩短的超时。
+/// 线程与界面共享的数据：待处理命令、结果送回通道和超时。
 /// Shared core: inbox of (command, reply-sender) plus test-tunable timeout.
 struct ConsoleShared {
-    /// 收件箱：控制台线程写入，UI 帧首整批取走。
+    /// 待处理命令列表：控制台线程写入，界面每帧结束时取走。
     /// Inbox: pushed by the reader thread, drained at frame start.
     inbox: Mutex<Vec<(String, Sender<String>)>>,
-    /// 回执等待超时（秒）。 / Reply wait timeout in seconds.
+    /// 等待结果返回的最长时间（秒）。 / Reply wait timeout in seconds.
     timeout_seconds: f32,
 }
 
-/// 运行时控制台：持有共享内核；控制台线程由 `spawn` 启动。
+/// 运行时控制台：保存共享数据；控制台线程由 spawn 启动。
 /// Runtime console handle; the reader thread starts with `spawn`.
 pub struct DMIConsole {
-    /// 与控制台线程共享的内核。 / Core shared with the console thread.
+    /// 与控制台线程共享的数据。 / Core shared with the console thread.
     shared: Arc<ConsoleShared>,
 }
 
 impl DMIConsole {
-    /// 启动控制台线程并返回句柄；stdin 不可用（无终端启动）时线程静默退出。
+    /// 启动控制台线程；没有终端输入时，线程直接安静地结束。
     /// Spawns the reader thread; silent exit when stdin is unavailable.
     pub fn spawn(ctx: &Context) -> Self {
         Self::spawn_with_timeout(ctx, CONSOLE_TIMEOUT_SECONDS)
@@ -57,7 +57,7 @@ impl DMIConsole {
         Self { shared }
     }
 
-    /// 帧首消费：整批取出收件命令，逐条 `call_dmi` 并经配对通道送回应答。
+    /// 每帧结束时调用：取出全部命令，逐条执行并送回各自的结果。
     /// Frame-start pump: run every queued command within this frame.
     pub fn pump(&self, _ui: &mut Ui) {
         let batch: Vec<(String, Sender<String>)> = {
@@ -78,14 +78,14 @@ impl DMIConsole {
     }
 }
 
-/// 行规整：去空白；空行返回 None，静默忽略不应答。
+/// 整理一行输入：去掉空白；空行返回 None，不做应答。
 /// Normalizes one input line; blank input is skipped silently.
 fn normalize_line(line: &str) -> Option<String> {
     let command = line.trim().to_owned();
     (!command.is_empty()).then_some(command)
 }
 
-/// 等待回执：超时转为 CONSOLE_TIMEOUT 的 standard 分层应答。
+/// 等待一条命令的结果；超时则返回 CONSOLE_TIMEOUT 应答。
 /// Waits the paired reply; a timeout becomes a CONSOLE_TIMEOUT response.
 fn wait_outcome(receiver: &Receiver<String>, seconds: f32) -> String {
     receiver
@@ -93,7 +93,7 @@ fn wait_outcome(receiver: &Receiver<String>, seconds: f32) -> String {
         .unwrap_or_else(|_| fail_response(&CONSOLE_TIMEOUT, DMIComplexity::Standard))
 }
 
-/// 控制台线程主循环：读行→入队唤醒→等配对回执→整行打印，直至 stdin EOF。
+/// 控制台线程主循环：读一行、排队、唤醒界面、等待结果、打印。
 /// Reader loop: line in, paired response out, until stdin reaches EOF.
 fn console_loop(shared: Arc<ConsoleShared>, ctx: Context) {
     let stdin: Stdin = std::io::stdin();
@@ -127,7 +127,7 @@ fn console_loop(shared: Arc<ConsoleShared>, ctx: Context) {
 mod tests {
     use super::*;
 
-    /// 构建不起线程的内核句柄，超时可控（内核测试专用）。
+    /// 创建不启动线程的控制台对象，供队列逻辑测试使用。
     /// Threadless console handle with a controllable timeout.
     fn test_console(timeout_seconds: f32) -> DMIConsole {
         DMIConsole {
@@ -138,7 +138,7 @@ mod tests {
         }
     }
 
-    /// 以终端等价方式注入一条命令，返回其回执接收端。
+    /// 模拟终端注入一条命令，返回它的结果接收端。
     /// Submits one command exactly like the reader thread would.
     fn submit(shared: &Arc<ConsoleShared>, command: &str) -> Receiver<String> {
         let (sender, receiver) = mpsc::channel();
@@ -150,7 +150,7 @@ mod tests {
         receiver
     }
 
-    /// 帧内消费：命令在 pump 当帧执行，应答按配对通道保序返回。
+    /// 命令在 pump 调用中全部执行，结果按原顺序送回。
     /// Commands run inside the pumping frame; replies keep pairing order.
     #[test]
     fn pump_answers_commands_within_the_frame() {
@@ -170,7 +170,7 @@ mod tests {
         assert!(broken.recv().unwrap().contains("COMMAND_JSON_INVALID"));
     }
 
-    /// 忘记 pump 的兜底：等待超时得到 CONSOLE_TIMEOUT 应答。
+    /// 没有执行 pump 时，等待超时会得到 CONSOLE_TIMEOUT。
     /// Unanswered commands resolve to CONSOLE_TIMEOUT via recv timeout.
     #[test]
     fn unanswered_command_times_out() {
@@ -180,7 +180,7 @@ mod tests {
         assert!(response.contains("CONSOLE_TIMEOUT"), "{response}");
     }
 
-    /// 空行静默忽略；普通行去空白后原样成为命令。
+    /// 空行被忽略；普通行去掉空白后作为命令处理。
     /// Blank lines skip; content lines are trimmed into commands.
     #[test]
     fn blank_lines_are_skipped() {
